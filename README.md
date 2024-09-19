@@ -6,14 +6,12 @@
   <img src=".github/logo.jpg" width="500" alt="contem logo">
 </picture>
 
-</br>
+
+# Overview
+
+`go get -u github.com/maxbolgarin/contem`
 
 **contem** is a zero-dependency drop-in `context.Context` replacement for graceful shutdown. It is lightweight and easy to use: just `Add` your shutdown methods to the context, call `Wait` to wait an interruption signal and `Shutdown`. **contem** will graceful shutdown and release all added resources with error handling.
-
-Install: `go get github.com/maxbolgarin/contem`
-
-
-## Benefits of usage
 
 * **Graceful shutdown**: your application will process all incoming requests, close all allocated resources and save data from the buffer before exiting.
 * **Ctrl+C support**: you can catch `Ctrl+C` signals and gracefully shutdown the application out of the box without remebering how to use `signal.Notify`.
@@ -22,9 +20,9 @@ Install: `go get github.com/maxbolgarin/contem`
 * **Handle file close**: how to close a file when an application stops, if it was opened in the internals of your code? Should you return it right to the main or open at the beginning and propogate throught the app? **contem** allows you to add a `File` to the `Context`, than sync and close it during global shutdown.
 
 
-## How to become a shutdown master
+# Getting Started
 
-You can see a full example [here](example/main.go).
+You can see a full example [here](example/main.go)
 
 ```go
 // Step 1. Create context and defer Shutdown
@@ -55,7 +53,7 @@ What is going on in this snippet of code?
 3. Wait for the interruption signal. It will block code until `SIGTERM` or `SIGINT` signal is received. After that it will call `Shutdown` and exit the application.
 
 
-## Contributing
+# Contributing
 
 If you'd like to contribute to **contem**, make a fork and submit a pull request. You also can open an issue or text me on Telegram.
 
