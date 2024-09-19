@@ -60,7 +60,7 @@ type Context interface {
 	// It updates original context.
 	SetValue(key, value any) Context
 
-	// Wait blocks until the channel is closed (recieving [syscall.SIGINT] and [syscall.SIGTERM] signals by default).
+	// Wait blocks until the channel is closed (receiving [syscall.SIGINT] and [syscall.SIGTERM] signals by default).
 	// It should be used in main() function after an application start to wait for a interruption.
 	Wait()
 
@@ -198,7 +198,7 @@ func (ct *Contem) SetValue(key, value any) Context {
 	return ct
 }
 
-// Wait blocks until the channel is closed (recieving [syscall.SIGINT] and [syscall.SIGTERM] signals by default).
+// Wait blocks until the channel is closed (receiving [syscall.SIGINT] and [syscall.SIGTERM] signals by default).
 // It should be used in main() function after an application start to wait for a interruption.
 func (ct *Contem) Wait() {
 	if ch := ct.ctx.Done(); ch != nil {
