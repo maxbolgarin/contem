@@ -337,12 +337,12 @@ func TestAutoShutdown(t *testing.T) {
 func TestSignals(t *testing.T) {
 	var funcFlag atomic.Bool
 
-	ctx := contem.New(contem.WithSignals(syscall.SIGALRM), contem.AutoShutdown())
+	ctx := contem.New(contem.WithSignals(syscall.SIGINT), contem.AutoShutdown())
 	ctx.Add(func(ctx context.Context) error {
 		funcFlag.Store(true)
 		return nil
 	})
-	syscall.Kill(os.Getpid(), syscall.SIGALRM)
+	syscall.Kill(os.Getpid(), syscall.SIGINT)
 
 	ctx.Wait()
 
