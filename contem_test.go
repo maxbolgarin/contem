@@ -382,7 +382,8 @@ func TestExit(t *testing.T) {
 			}
 		}
 	}()
-	ctx := contem.New(contem.Exit(nil))
+	var err error
+	ctx := contem.New(contem.Exit(&err))
 	ctx.Add(func(ctx context.Context) error {
 		return nil
 	})
