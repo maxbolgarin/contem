@@ -6,6 +6,8 @@
   <img src=".github/logo.jpg" width="500" alt="contem logo">
 </picture>
 
+</br>
+
 **contem** is a zero-dependency drop-in `context.Context` replacement for graceful shutdown. It is lightweight and easy to use: just `Add` your shutdown methods to the context, call `Wait` to wait an interruption signal and `Shutdown`. **contem** will graceful shutdown and release all added resources with error handling.
 
 Install: `go get github.com/maxbolgarin/contem`
