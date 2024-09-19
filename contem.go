@@ -80,10 +80,10 @@ type File interface {
 	Close() error
 }
 
-var _ context.Context = (*contextImpl)(nil)
-var _ Context = (*contextImpl)(nil)
+var _ context.Context = (*Contem)(nil)
+var _ Context = (*Contem)(nil)
 
-type contextImpl struct {
+type Contem struct {
 	funcs       []ShutdownFunc
 	fileClosers []CloseFunc
 
@@ -103,7 +103,7 @@ type contextImpl struct {
 // New returns a ready to use [Context] with a created [signal.NotifyContext]
 // listening to [syscall.SIGINT] and [syscall.SIGTERM] signals by default.
 // You also can provide your custom signals, custom logger or other options.
-func New(opts ...Option) Context {
+func New(opts ...Option) *Contem {
 	op := parseOptions(opts...)
 
 	if op.baseCtx == nil {
@@ -116,7 +116,7 @@ func New(opts ...Option) Context {
 
 	ctx, cancel := signal.NotifyContext(op.baseCtx, op.signals...)
 
-	ct := &contextImpl{
+	ct := &Contem{
 		ctx:      ctx,
 		cancel:   cancel,
 		log:      op.log,
@@ -139,12 +139,12 @@ func New(opts ...Option) Context {
 }
 
 // Empty returns a dummy [Context] with [context.Background] context. It is useful for tests.
-func Empty() Context {
-	return &contextImpl{ctx: context.Background(), cancel: func() {}}
+func Empty() *Contem {
+	return &Contem{ctx: context.Background(), cancel: func() {}}
 }
 
 // Add adds a shutdown function to the list of functions that will be called in the [Context.Shutdown] method.
-func (ct *contextImpl) Add(f ShutdownFunc) {
+func (ct *Contem) Add(f ShutdownFunc) {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 
@@ -153,7 +153,7 @@ func (ct *contextImpl) Add(f ShutdownFunc) {
 
 // AddClose adds a close function (from [io.Closer]) to the list of functions
 // that will be called in the [Context.Shutdown] method.
-func (ct *contextImpl) AddClose(f CloseFunc) {
+func (ct *Contem) AddClose(f CloseFunc) {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 
@@ -163,7 +163,7 @@ func (ct *contextImpl) AddClose(f CloseFunc) {
 }
 
 // AddFunc adds a plain function to the list of functions that will be called in the [Context.Shutdown] method.
-func (ct *contextImpl) AddFunc(f func()) {
+func (ct *Contem) AddFunc(f func()) {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 
@@ -175,7 +175,7 @@ func (ct *contextImpl) AddFunc(f func()) {
 
 // AddFile adds a [File] to the list of functions that will be called in [Context.Shutdown] method
 // after all another closing methods (they can produce output to files, for example).
-func (ct *contextImpl) AddFile(f File) {
+func (ct *Contem) AddFile(f File) {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 
@@ -193,14 +193,14 @@ func (ct *contextImpl) AddFile(f File) {
 
 // SetValue sets a value to the underlying context. You can get this value using [Context.Value] method.
 // It updates original context.
-func (ct *contextImpl) SetValue(key, value any) Context {
+func (ct *Contem) SetValue(key, value any) Context {
 	ct.ctx = context.WithValue(ct.ctx, key, value)
 	return ct
 }
 
 // Wait blocks until the channel is closed (recieving [syscall.SIGINT] and [syscall.SIGTERM] signals by default).
 // It should be used in main() function after an application start to wait for a interruption.
-func (ct *contextImpl) Wait() {
+func (ct *Contem) Wait() {
 	if ch := ct.ctx.Done(); ch != nil {
 		<-ch
 	}
@@ -209,13 +209,13 @@ func (ct *contextImpl) Wait() {
 // Cancel cancels an underlying context. Using this method is a bad practice, because it allows you to
 // [Context.Shutdown] from any place inside your code, not only from main.
 // It can be useful in some cases (e.g. handle [http.ListenAndServe] error), but it's not recommended.
-func (ct *contextImpl) Cancel() {
+func (ct *Contem) Cancel() {
 	ct.cancel()
 }
 
 // Shutdown cancels an underlying context, then calls every added function with timeout in parallel.
 // It will return an error if timeout exceeds or any of shutdown functions returns error.
-func (ct *contextImpl) Shutdown() error {
+func (ct *Contem) Shutdown() error {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 
@@ -275,26 +275,26 @@ func (ct *contextImpl) Shutdown() error {
 
 // Deadline returns the time when work done on behalf of this context should be canceled.
 // Deadline returns ok==false when no deadline is set.
-func (c *contextImpl) Deadline() (time.Time, bool) {
+func (c *Contem) Deadline() (time.Time, bool) {
 	return c.ctx.Deadline()
 }
 
 // Done returns a channel that will be closed (after receiving [syscall.SIGINT] or [syscall.SIGTERM] signal by default).
-func (c *contextImpl) Done() <-chan struct{} {
+func (c *Contem) Done() <-chan struct{} {
 	return c.ctx.Done()
 }
 
 // Err returns nil if Done is not yet closed, if Done is closed, Err returns a non-nil error explaining why.
-func (c *contextImpl) Err() error {
+func (c *Contem) Err() error {
 	return c.ctx.Err()
 }
 
 // Value returns the value associated with this context for key, or nil if no value is associated with key.
-func (c *contextImpl) Value(key any) any {
+func (c *Contem) Value(key any) any {
 	return c.ctx.Value(key)
 }
 
-func (c *contextImpl) closeFiles(ws *waiterSet, timeout time.Duration) error {
+func (c *Contem) closeFiles(ws *waiterSet, timeout time.Duration) error {
 	if len(c.fileClosers) == 0 {
 		return nil
 	}
