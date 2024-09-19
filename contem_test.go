@@ -335,14 +335,19 @@ func TestAutoShutdown(t *testing.T) {
 }
 
 func TestSignals(t *testing.T) {
+	// This isn't working in github actions
+	if testing.Short() {
+		t.SkipNow()
+	}
+
 	var funcFlag atomic.Bool
 
-	ctx := contem.New(contem.WithSignals(syscall.SIGINT), contem.AutoShutdown())
+	ctx := contem.New(contem.WithSignals(syscall.SIGALRM), contem.AutoShutdown())
 	ctx.Add(func(ctx context.Context) error {
 		funcFlag.Store(true)
 		return nil
 	})
-	syscall.Kill(os.Getpid(), syscall.SIGINT)
+	syscall.Kill(os.Getpid(), syscall.SIGALRM)
 
 	ctx.Wait()
 
