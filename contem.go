@@ -226,7 +226,7 @@ func (ct *contextImpl) Shutdown() error {
 	ct.cancel()
 
 	if ct.logging {
-		ct.log.Infof("starting shutdown")
+		ct.log.Info("starting shutdown")
 	}
 
 	var (
@@ -257,7 +257,7 @@ func (ct *contextImpl) Shutdown() error {
 	serr := joinErrors(errs)
 	if serr != nil {
 		if ct.logging {
-			ct.log.Errorf("cannot shutdown: %s", serr)
+			ct.log.Error("cannot shutdown", "error", serr)
 		}
 		ct.outerErr = &serr // we will os.Exit(1) in any way
 	}
@@ -361,9 +361,10 @@ func newWaiter(ctx context.Context, foo ShutdownFunc, l Logger) *waiter {
 		defer close(w.done)
 		defer func() {
 			if panicErr := recover(); panicErr != nil {
-				w.err = fmt.Errorf("%+v\n%s", panicErr, string(debug.Stack()))
+				stack := string(debug.Stack())
+				w.err = fmt.Errorf("%+v\n%s", panicErr, stack)
 				if l != nil {
-					l.Errorf("panic: %+v", panicErr)
+					l.Error("panic", "error", panicErr, "stack", stack)
 				}
 			}
 		}()

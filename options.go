@@ -2,25 +2,24 @@ package contem
 
 import (
 	"context"
-	"fmt"
 	"os"
 )
 
 // Option is a function to change [Context] behaviour.
 type Option func(*shutdownerOptions)
 
-// Logger is an interface of a logger that is used in [Context.Shutdown] method.
+// Logger is an interface of a structural logger that is used in [Context.Shutdown] method.
 // It is used to log messages in case of error or during shutdown if you provide [WithLogger] option.
 type Logger interface {
-	Infof(msg string, args ...any)
-	Errorf(msg string, args ...any)
+	Info(msg string, args ...any)
+	Error(msg string, args ...any)
 }
 
 // Logze is an interface of a logger from github.com/maxbolgarin/logze.
 // You can add it using [WithLogze] method as logger for [Context.Shutdown].
 type Logze interface {
-	Infof(msg string, args ...any)
-	Errorf(err error, msg string, args ...any)
+	Info(msg string, args ...any)
+	Error(err error, msg string, args ...any)
 }
 
 // DontCloseFiles ignores file closing at the end of [Context.Shutdown],
@@ -104,6 +103,6 @@ type logzeWrapper struct {
 	Logze
 }
 
-func (l logzeWrapper) Errorf(msg string, args ...any) {
-	l.Logze.Errorf(fmt.Errorf(msg, args...), "")
+func (l logzeWrapper) Error(msg string, args ...any) {
+	l.Logze.Error(nil, msg, args...)
 }

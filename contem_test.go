@@ -3,7 +3,7 @@ package contem_test
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -15,7 +15,7 @@ import (
 )
 
 func TestShutdown(t *testing.T) {
-	ctx := contem.New(contem.WithLogger(testLogger{}))
+	ctx := contem.New(contem.WithLogger(slog.Default()))
 
 	if val := ctx.Value("key"); val != nil {
 		t.Errorf("unexpected value: %v", val)
@@ -444,22 +444,12 @@ func wait(ctx context.Context, v *atomic.Bool, tm time.Duration) bool {
 	}
 }
 
-type testLogger struct{}
-
-func (testLogger) Errorf(s string, args ...interface{}) {
-	log.Printf("error: "+s, args...)
-}
-
-func (testLogger) Infof(s string, args ...interface{}) {
-	log.Printf(s, args...)
-}
-
 type testLogze struct{}
 
-func (testLogze) Errorf(err error, s string, args ...interface{}) {
-	log.Printf("error: "+s, args...)
+func (testLogze) Error(err error, s string, args ...any) {
+	slog.Error(s, args...)
 }
 
-func (testLogze) Infof(s string, args ...interface{}) {
-	log.Printf(s, args...)
+func (testLogze) Info(s string, args ...any) {
+	slog.Info(s, args...)
 }
