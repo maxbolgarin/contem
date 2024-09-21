@@ -11,7 +11,7 @@
 
 `go get -u github.com/maxbolgarin/contem`
 
-**contem** is a zero-dependency drop-in `context.Context` replacement for graceful shutdown. It is lightweight and easy to use: just `Add` your shutdown methods to the context, call `Wait` to wait an interruption signal and `Shutdown`. **contem** will graceful shutdown and release all added resources with error handling.
+**contem** is a zero-dependency drop-in `context.Context` replacement for graceful shutdown. It is lightweight and easy to use: just create a `func run(Context) error { ... }`, where you should `Add` your shutdown methods to the `Context`, and then call `Start` function. **contem** will graceful shutdown and release all added resources with error handling.
 
 * **Graceful shutdown**: your application will process all incoming requests, close all allocated resources and save data from the buffer before exiting.
 * **Ctrl+C support**: you can catch `Ctrl+C` signals and gracefully shutdown the application out of the box without remebering how to use `signal.Notify`.
@@ -22,7 +22,33 @@
 
 # Getting Started
 
-You can see a full example [here](example/main.go)
+You can find some examples [here](examples)
+
+
+### Example with Start function
+
+```go
+func main() {
+	contem.Start(run, slog.Default())
+}
+
+func run(ctx contem.Context) error {
+  srv := http.Server{Addr: ":8080"}
+  ctx.Add(srv.Shutdown)
+
+  // TODO: add some code
+  
+  return nil
+}
+```
+
+You should write an application logic in the `run` function. It should be non blocking. It should init application, start wotrkers in a separate goroutines and returns error in case of initialization failure. **contem** will wait for interrupt signals and then calls `Context.Shutdown`. Run function accepts `Context` as an argument, so you can add shutdown and cancel methods to it.
+
+Here is a full example: [click me](examples/start/main.go)
+
+
+
+### Advanced usage
 
 ```go
 // Step 1. Create context and defer Shutdown
@@ -42,7 +68,6 @@ ctx.Add(srv.Shutdown)
 // Step 3. Wait for the interruption signal
 ctx.Wait()
 ```
-
 
 What is going on in this snippet of code?
 
