@@ -80,6 +80,32 @@ type File interface {
 	Close() error
 }
 
+// Start starts a new application with a given run function and logger. Run fuction should be non blocking.
+// It should init application, start wotrkers in a separate goroutines and returns error in case of initialization failure.
+// [Start] will wait for interrupt signals and then calls [Context.Shutdown]. It uses logger to log run() error.
+// Run function accepts [Context] as an argument. So you can add shutdown and cancel methods to it.
+// If an error occurs during run, it will log it and exit with 1 code.
+func Start(run func(Context) error, log Logger, opts ...Options) {
+	var err error
+
+	var opt Options
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	opt.Log = log
+	opt.OuterErr = &err
+	opt.Exit = true
+
+	ctx := NewWithOptions(opt)
+	defer ctx.Shutdown()
+
+	if err = run(ctx); err != nil {
+		log.Error("cannot run application", "error", err)
+		return
+	}
+	ctx.Wait()
+}
+
 var _ context.Context = (*Contem)(nil)
 var _ Context = (*Contem)(nil)
 
@@ -90,11 +116,14 @@ type Contem struct {
 	ctx    context.Context
 	cancel func()
 
-	log      Logger
-	outerErr *error
-	exit     bool
-	logging  bool
-	noFiles  bool
+	log           Logger
+	outerErr      *error
+	exitErrorCode int
+	noParallel    bool
+	exit          bool
+	logging       bool
+	noFiles       bool
+	regularOrder  bool
 
 	isClosed atomic.Bool
 	mu       sync.Mutex
@@ -104,29 +133,37 @@ type Contem struct {
 // listening to [syscall.SIGINT] and [syscall.SIGTERM] signals by default.
 // You also can provide your custom signals, custom logger or other options.
 func New(opts ...Option) *Contem {
-	op := parseOptions(opts...)
+	return NewWithOptions(parseOptions(opts...))
+}
 
-	if op.baseCtx == nil {
-		op.baseCtx = context.Background()
+// NewWithOptions returns a ready to use [Context] with a created [signal.NotifyContext]
+// listening to [syscall.SIGINT] and [syscall.SIGTERM] signals by default.
+// You also can provide your custom signals, custom logger or other options.
+func NewWithOptions(opts Options) *Contem {
+	if opts.BaseCtx == nil {
+		opts.BaseCtx = context.Background()
 	}
 
-	if len(op.signals) == 0 {
-		op.signals = []os.Signal{syscall.SIGINT, syscall.SIGTERM}
+	if len(opts.Signals) == 0 {
+		opts.Signals = []os.Signal{syscall.SIGINT, syscall.SIGTERM}
 	}
 
-	ctx, cancel := signal.NotifyContext(op.baseCtx, op.signals...)
+	ctx, cancel := signal.NotifyContext(opts.BaseCtx, opts.Signals...)
 
 	ct := &Contem{
-		ctx:      ctx,
-		cancel:   cancel,
-		log:      op.log,
-		outerErr: op.outerErr,
-		exit:     op.exit,
-		logging:  op.logging,
-		noFiles:  op.noFiles,
+		ctx:           ctx,
+		cancel:        cancel,
+		log:           opts.Log,
+		outerErr:      opts.OuterErr,
+		exitErrorCode: opts.ExitErrorCode,
+		noParallel:    opts.NoParallel,
+		exit:          opts.Exit,
+		logging:       opts.Log != nil,
+		noFiles:       opts.DontCloseFiles,
+		regularOrder:  opts.RegularFileOrder,
 	}
 
-	if op.auto {
+	if opts.AutoShutdown {
 		go func() {
 			select {
 			case <-ctx.Done():
@@ -179,7 +216,7 @@ func (ct *Contem) AddFile(f File) {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 
-	ct.fileClosers = append(ct.fileClosers, func() error {
+	closer := func() error {
 		var errs []error
 		if err := f.Sync(); err != nil {
 			errs = append(errs, fmt.Errorf("sync: %w", err))
@@ -188,7 +225,15 @@ func (ct *Contem) AddFile(f File) {
 			errs = append(errs, fmt.Errorf("close: %w", err))
 		}
 		return joinErrors(errs)
-	})
+	}
+
+	if ct.regularOrder {
+		ct.funcs = append(ct.funcs, func(ctx context.Context) error {
+			return closer()
+		})
+	} else {
+		ct.fileClosers = append(ct.fileClosers, closer)
+	}
 }
 
 // SetValue sets a value to the underlying context. You can get this value using [Context.Value] method.
@@ -232,26 +277,13 @@ func (ct *Contem) Shutdown() error {
 	var (
 		start = time.Now()
 		ws    = newWaiterSet(ct.log)
-		errs  []error
 	)
 
-	shutdownCtx, cancel := context.WithTimeout(ct.ctx, ShutdownTimeout)
-	defer cancel()
+	errs := ct.shutdown(ws, start)
 
-	for _, f := range ct.funcs {
-		ws.add(shutdownCtx, f)
-	}
-
-	err := ws.await(start, ShutdownTimeout)
-	if err != nil {
-		errs = append(errs, fmt.Errorf("shutdown: %w", err))
-	}
-
-	if !ct.noFiles {
-		closeFilesTimeout := ShutdownTimeout - time.Since(start)
-		if err := ct.closeFiles(ws, closeFilesTimeout); err != nil {
-			errs = append(errs, fmt.Errorf("files: %w", err))
-		}
+	errsFiles := ct.closeFiles(ws, start)
+	if len(errsFiles) > 0 {
+		errs = append(errs, errsFiles...)
 	}
 
 	serr := joinErrors(errs)
@@ -265,7 +297,7 @@ func (ct *Contem) Shutdown() error {
 	if ct.exit {
 		time.Sleep(100 * time.Millisecond) // wait for flush
 		if ct.outerErr != nil && *ct.outerErr != nil {
-			os.Exit(1)
+			os.Exit(ct.exitErrorCode)
 		}
 		os.Exit(0)
 	}
@@ -275,46 +307,87 @@ func (ct *Contem) Shutdown() error {
 
 // Deadline returns the time when work done on behalf of this context should be canceled.
 // Deadline returns ok==false when no deadline is set.
-func (c *Contem) Deadline() (time.Time, bool) {
-	return c.ctx.Deadline()
+func (ct *Contem) Deadline() (time.Time, bool) {
+	return ct.ctx.Deadline()
 }
 
 // Done returns a channel that will be closed (after receiving [syscall.SIGINT] or [syscall.SIGTERM] signal by default).
-func (c *Contem) Done() <-chan struct{} {
-	return c.ctx.Done()
+func (ct *Contem) Done() <-chan struct{} {
+	return ct.ctx.Done()
 }
 
 // Err returns nil if Done is not yet closed, if Done is closed, Err returns a non-nil error explaining why.
-func (c *Contem) Err() error {
-	return c.ctx.Err()
+func (ct *Contem) Err() error {
+	return ct.ctx.Err()
 }
 
 // Value returns the value associated with this context for key, or nil if no value is associated with key.
-func (c *Contem) Value(key any) any {
-	return c.ctx.Value(key)
+func (ct *Contem) Value(key any) any {
+	return ct.ctx.Value(key)
 }
 
-func (c *Contem) closeFiles(ws *waiterSet, timeout time.Duration) error {
-	if len(c.fileClosers) == 0 {
+func (ct *Contem) shutdown(ws *waiterSet, start time.Time) []error {
+	var errs []error
+	if ct.noParallel {
+		for _, f := range ct.funcs {
+			if err := f(ct.ctx); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return errs
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(ct.ctx, ShutdownTimeout)
+	defer cancel()
+
+	for _, f := range ct.funcs {
+		ws.add(shutdownCtx, f)
+	}
+
+	err := ws.await(start, ShutdownTimeout)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("shutdown: %w", err))
+	}
+
+	return errs
+}
+
+func (ct *Contem) closeFiles(ws *waiterSet, start time.Time) []error {
+	if ct.noFiles {
 		return nil
 	}
 
-	if timeout < ShutdownTimeout/5 {
-		timeout = ShutdownTimeout / 5
+	if len(ct.fileClosers) == 0 {
+		return nil
 	}
 
-	for _, f := range c.fileClosers {
+	var errs []error
+	if ct.noParallel {
+		for _, f := range ct.fileClosers {
+			if err := f(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		return errs
+	}
+
+	for _, f := range ct.fileClosers {
 		ws.add(context.Background(), func(context.Context) error {
 			return f()
 		})
 	}
 
-	err := ws.await(time.Now(), timeout)
-	if err != nil {
-		return err
+	timeout := ShutdownTimeout - time.Since(start)
+	if timeout < ShutdownTimeout/5 {
+		timeout = ShutdownTimeout / 5
 	}
 
-	return nil
+	err := ws.await(time.Now(), timeout)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("close files: %w", err))
+	}
+
+	return errs
 }
 
 type waiterSet struct {
