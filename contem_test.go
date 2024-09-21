@@ -28,14 +28,15 @@ func TestShutdown(t *testing.T) {
 	}
 
 	var (
-		firstFuncFlag  atomic.Bool
-		secondFuncFlag atomic.Bool
-		thirdFuncFlag  atomic.Bool
-		syncFuncFlag   atomic.Bool
-		closeFuncFlag  atomic.Bool
-		syncFunc2Flag  atomic.Bool
-		closeFunc2Flag atomic.Bool
-		shutdownFlag   atomic.Bool
+		firstFuncFlag   atomic.Bool
+		secondFuncFlag  atomic.Bool
+		thirdFuncFlag   atomic.Bool
+		syncFuncFlag    atomic.Bool
+		closeFuncFlag   atomic.Bool
+		syncFunc2Flag   atomic.Bool
+		closeFunc2Flag  atomic.Bool
+		shutdownFlag    atomic.Bool
+		endShutdownFlag atomic.Bool
 	)
 	ctx.Add(func(ctx context.Context) error {
 		firstFuncFlag.Store(true)
@@ -57,6 +58,7 @@ func TestShutdown(t *testing.T) {
 		if err != nil {
 			t.Errorf("shutdown error: %v", err)
 		}
+		endShutdownFlag.Store(true)
 	}()
 
 	ctx.Wait()
@@ -67,25 +69,28 @@ func TestShutdown(t *testing.T) {
 	textCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if !wait(textCtx, &firstFuncFlag, contem.ShutdownTimeout) {
-		t.Errorf("firstFuncFlag is not set")
+	if !wait(textCtx, &endShutdownFlag, contem.ShutdownTimeout) {
+		t.Errorf("endShutdownFlag is not set")
 	}
-	if !wait(textCtx, &secondFuncFlag, contem.ShutdownTimeout) {
+	if !firstFuncFlag.Load() {
 		t.Errorf("secondFuncFlag is not set")
 	}
-	if !wait(textCtx, &thirdFuncFlag, contem.ShutdownTimeout) {
+	if !secondFuncFlag.Load() {
 		t.Errorf("secondFuncFlag is not set")
 	}
-	if !wait(textCtx, &syncFuncFlag, contem.ShutdownTimeout) {
+	if !thirdFuncFlag.Load() {
+		t.Errorf("thirdFuncFlag is not set")
+	}
+	if !syncFuncFlag.Load() {
 		t.Errorf("syncFuncFlag is not set")
 	}
-	if !wait(textCtx, &closeFuncFlag, contem.ShutdownTimeout) {
+	if !closeFuncFlag.Load() {
 		t.Errorf("closeFuncFlag is not set")
 	}
-	if !wait(textCtx, &syncFunc2Flag, contem.ShutdownTimeout) {
+	if !syncFunc2Flag.Load() {
 		t.Errorf("syncFunc2Flag is not set")
 	}
-	if !wait(textCtx, &closeFunc2Flag, contem.ShutdownTimeout) {
+	if !closeFunc2Flag.Load() {
 		t.Errorf("closeFunc2Flag is not set")
 	}
 }
@@ -94,12 +99,13 @@ func TestShutdownError(t *testing.T) {
 	ctx := contem.New(contem.WithLogze(testLogze{}))
 
 	var (
-		firstFuncFlag  atomic.Bool
-		secondFuncFlag atomic.Bool
-		thirdFuncFlag  atomic.Bool
-		syncFuncFlag   atomic.Bool
-		closeFuncFlag  atomic.Bool
-		shutdownFlag   atomic.Bool
+		firstFuncFlag   atomic.Bool
+		secondFuncFlag  atomic.Bool
+		thirdFuncFlag   atomic.Bool
+		syncFuncFlag    atomic.Bool
+		closeFuncFlag   atomic.Bool
+		shutdownFlag    atomic.Bool
+		endShutdownFlag atomic.Bool
 	)
 	ctx.Add(func(ctx context.Context) error {
 		firstFuncFlag.Store(true)
@@ -122,6 +128,8 @@ func TestShutdownError(t *testing.T) {
 			t.Error("shutdown should return error")
 			return
 		}
+		endShutdownFlag.Store(true)
+
 		if !strings.Contains(err.Error(), "some error") {
 			t.Errorf("shutdown error should contain 'some error' but got %v", err)
 		}
@@ -144,19 +152,22 @@ func TestShutdownError(t *testing.T) {
 	textCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if !wait(textCtx, &firstFuncFlag, contem.ShutdownTimeout) {
-		t.Errorf("firstFuncFlag is not set")
+	if !wait(textCtx, &endShutdownFlag, contem.ShutdownTimeout) {
+		t.Errorf("endShutdownFlag is not set")
 	}
-	if !wait(textCtx, &secondFuncFlag, contem.ShutdownTimeout) {
+	if !firstFuncFlag.Load() {
 		t.Errorf("secondFuncFlag is not set")
 	}
-	if !wait(textCtx, &thirdFuncFlag, contem.ShutdownTimeout) {
+	if !secondFuncFlag.Load() {
+		t.Errorf("secondFuncFlag is not set")
+	}
+	if !thirdFuncFlag.Load() {
 		t.Errorf("thirdFuncFlag is not set")
 	}
-	if !wait(textCtx, &syncFuncFlag, contem.ShutdownTimeout) {
+	if !syncFuncFlag.Load() {
 		t.Errorf("syncFuncFlag is not set")
 	}
-	if !wait(textCtx, &closeFuncFlag, contem.ShutdownTimeout) {
+	if !closeFuncFlag.Load() {
 		t.Errorf("closeFuncFlag is not set")
 	}
 
@@ -266,7 +277,102 @@ func TestDontCloseFiles(t *testing.T) {
 		t.Errorf("syncFuncFlag is set")
 	}
 	if closeFuncFlag.Load() {
+		t.Errorf("closeFuncFlag is set")
+	}
+}
+
+func TestNoParallelAndFileOrder(t *testing.T) {
+	ctx := contem.New(contem.NoParallel(), contem.RegularCloseFilesOrder())
+
+	var (
+		numberChannel = make(chan int)
+
+		syncFuncFlag   atomic.Bool
+		closeFuncFlag  atomic.Bool
+		syncFunc2Flag  atomic.Bool
+		closeFunc2Flag atomic.Bool
+		shutdownFlag   atomic.Bool
+	)
+	ctx.Add(func(ctx context.Context) error {
+		numberChannel <- 1
+		return nil
+	})
+	ctx.Add(func(ctx context.Context) error {
+		numberChannel <- 2
+		return nil
+	})
+
+	ctx.AddFile(&file{&syncFuncFlag, &closeFuncFlag, false, false})
+	ctx.AddFile(&file{&syncFunc2Flag, &closeFunc2Flag, false, false})
+
+	ctx.Add(func(ctx context.Context) error {
+		numberChannel <- 3
+		return nil
+	})
+	ctx.Add(func(ctx context.Context) error {
+		numberChannel <- 4
+		return nil
+	})
+
+	go func() {
+		shutdownFlag.Store(true)
+		err := ctx.Shutdown()
+		if err != nil {
+			t.Errorf("shutdown error: %v", err)
+		}
+	}()
+
+	ctx.Wait()
+	if !shutdownFlag.Load() {
+		t.Errorf("shutdown flag is not set")
+	}
+
+	if syncFuncFlag.Load() {
+		t.Errorf("syncFuncFlag is set")
+	}
+	if closeFuncFlag.Load() {
+		t.Errorf("closeFuncFlag is set")
+	}
+	if syncFunc2Flag.Load() {
+		t.Errorf("syncFunc2Flag is set")
+	}
+	if closeFunc2Flag.Load() {
+		t.Errorf("closeFuncF2lag is set")
+	}
+
+	expected := []int{1, 2, 3, 4}
+
+	var out []int
+	out = append(out, <-numberChannel)
+	if syncFuncFlag.Load() {
+		t.Errorf("syncFuncFlag is set")
+	}
+
+	out = append(out, <-numberChannel)
+	out = append(out, <-numberChannel)
+
+	if !syncFuncFlag.Load() {
+		t.Errorf("syncFuncFlag is not set")
+	}
+	if !closeFuncFlag.Load() {
 		t.Errorf("closeFuncFlag is not set")
+	}
+	if !syncFunc2Flag.Load() {
+		t.Errorf("syncFunc2Flag is not set")
+	}
+	if !closeFunc2Flag.Load() {
+		t.Errorf("closeFuncF2lag is not set")
+	}
+
+	out = append(out, <-numberChannel)
+	if len(out) != len(expected) {
+		t.Errorf("unexpected length")
+	}
+
+	for i, v := range out {
+		if v != expected[i] {
+			t.Errorf("unexpected value: %v", v)
+		}
 	}
 }
 
@@ -388,7 +494,7 @@ func TestExit(t *testing.T) {
 		}
 	}()
 	var err error
-	ctx := contem.New(contem.Exit(&err))
+	ctx := contem.New(contem.Exit(&err, 123))
 	ctx.Add(func(ctx context.Context) error {
 		return nil
 	})
