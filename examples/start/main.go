@@ -30,11 +30,13 @@ func run(ctx contem.Context) error {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 
-		select {
-		case <-ticker.C:
-			log.Info("5 seconds passed")
-		case <-ctx.Done():
-			return
+		for {
+			select {
+			case <-ticker.C:
+				log.Info("5 seconds passed")
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
