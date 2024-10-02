@@ -85,6 +85,7 @@ type File interface {
 // [Start] will wait for interrupt signals and then calls [Context.Shutdown]. It uses logger to log run() error.
 // Run function accepts [Context] as an argument. So you can add shutdown and cancel methods to it.
 // If an error occurs during run, it will log it and exit with 1 code.
+// [Exit], [WithLogger] and [WithLogze] options are no-op because applied by default.
 func Start(run func(Context) error, log Logger, opts ...Options) {
 	var err error
 
