@@ -99,6 +99,14 @@ func Start(run func(Context) error, log Logger, opts ...Options) {
 	ctx := NewWithOptions(opt)
 	defer ctx.Shutdown()
 
+	defer func() {
+		if panicErr := recover(); panicErr != nil {
+			stack := string(debug.Stack())
+			err = fmt.Errorf("%+v\n%s", panicErr, stack)
+			log.Error("panic", "error", panicErr, "stack", stack)
+		}
+	}()
+
 	if err = run(ctx); err != nil {
 		log.Error("cannot run application", "error", err)
 		return
