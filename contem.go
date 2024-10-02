@@ -81,7 +81,7 @@ type File interface {
 }
 
 // Start starts a new application with a given run function and logger. Run fuction should be non blocking.
-// It should init application, start wotrkers in a separate goroutines and returns error in case of initialization failure.
+// It should init application, start workers in separate goroutines and return error in case of initialization failure.
 // [Start] will wait for interrupt signals and then calls [Context.Shutdown]. It uses logger to log run() error.
 // Run function accepts [Context] as an argument. So you can add shutdown and cancel methods to it.
 // If an error occurs during run, it will log it and exit with 1 code.
