@@ -96,7 +96,7 @@ func TestShutdown(t *testing.T) {
 }
 
 func TestShutdownError(t *testing.T) {
-	ctx := contem.New(contem.WithLogze(testLogze{}))
+	ctx := contem.New()
 
 	var (
 		firstFuncFlag   atomic.Bool

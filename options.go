@@ -15,13 +15,6 @@ type Logger interface {
 	Error(msg string, args ...any)
 }
 
-// Logze is an interface of a logger from github.com/maxbolgarin/logze.
-// You can add it using [WithLogze] method as logger for [Context.Shutdown].
-type Logze interface {
-	Info(msg string, args ...any)
-	Error(err error, msg string, args ...any)
-}
-
 // Options contains all options to change [Context] behaviour.
 type Options struct {
 	// BaseCtx is the base context for [Context] underlying context.
@@ -111,21 +104,11 @@ func WithLogger(l Logger) Option {
 	}
 }
 
-// WithLogger uses given logze logger in the [Context.Shutdown] method to log errors and info messages.
-func WithLogze(l Logze) Option {
-	return WithLogger(LogzeToLogger(l))
-}
-
 // WithSignals sets signals that triggers context close, default is [syscall.SIGINT] and [syscall.SIGTERM].
 func WithSignals(sig ...os.Signal) Option {
 	return func(s *Options) {
 		s.Signals = sig
 	}
-}
-
-// LogzeToLogger converts [Logze] (logger from github.com/maxbolgarin/logze) to [Logger].
-func LogzeToLogger(l Logze) Logger {
-	return logzeWrapper{l}
 }
 
 func parseOptions(opts ...Option) Options {
@@ -134,12 +117,4 @@ func parseOptions(opts ...Option) Options {
 		optFunc(&res)
 	}
 	return res
-}
-
-type logzeWrapper struct {
-	Logze
-}
-
-func (l logzeWrapper) Error(msg string, args ...any) {
-	l.Logze.Error(nil, msg, args...)
 }
