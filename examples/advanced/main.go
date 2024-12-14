@@ -51,7 +51,7 @@ func run(ctx contem.Context) error {
 	ctx.Add(srv.Shutdown)
 
 	// Dummy example, image you have real code here
-	for i := range 10 {
+	for i := range make([]int, 10) {
 		ctx.AddClose(new(ctx, i).Close)
 	}
 
