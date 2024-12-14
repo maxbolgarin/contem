@@ -1,13 +1,13 @@
-# contem
+# contem - drop-in `context.Context` replacement
 
-[![GoDoc][doc-img]][doc] [![Build][ci-img]][ci] [![GoReport][report-img]][report]
+[![Go Version][version-img]][doc] [![GoDoc][doc-img]][doc] [![Build][ci-img]][ci] [![GoReport][report-img]][report]
 
 <picture>
   <img src=".github/logo.jpg" width="500" alt="contem logo">
 </picture>
 
 
-# Overview
+## Overview
 
 `go get -u github.com/maxbolgarin/contem`
 
@@ -20,7 +20,7 @@
 * **Handle file close**: how to close a file when an application stops, if it was opened in the internals of your code? Should you return it right to the main or open at the beginning and propogate throught the app? **contem** allows you to add a `File` to the `Context`, than sync and close it during global shutdown.
 
 
-# Getting Started
+## Getting Started
 
 You can find some examples [here](examples)
 
@@ -78,13 +78,17 @@ What is going on in this snippet of code?
 3. Wait for the interruption signal. It will block code until `SIGTERM` or `SIGINT` signal is received. After that it will call `Shutdown` and exit the application.
 
 
-# Contributing
+## Contributing
 
 If you'd like to contribute to **contem**, make a fork and submit a pull request. You also can open an issue or text me on Telegram.
 
-Released under the [MIT License]
 
-[MIT License]: LICENSE.txt
+## License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
+[LICENSE]: LICENSE.txt
+[version-img]: https://img.shields.io/badge/Go-%3E%3D%201.19-%23007d9c
 [doc-img]: https://pkg.go.dev/badge/github.com/maxbolgarin/contem
 [doc]: https://pkg.go.dev/github.com/maxbolgarin/contem
 [ci-img]: https://github.com/maxbolgarin/contem/actions/workflows/go.yml/badge.svg
