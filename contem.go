@@ -88,13 +88,10 @@ type File interface {
 // [Exit] and [WithLogger] options are no-op because applied by default.
 // Option [WithNoWait] will not call [Context.Wait] in the end of the [Start] function,
 // so [Start] will return immediately after run() function call.
-func Start(run func(Context) error, log Logger, opts ...Options) {
+func Start(run func(Context) error, log Logger, opts ...Option) {
 	var err error
 
-	var opt Options
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
+	opt := parseOptions(opts...)
 	opt.Log = log
 	opt.OuterErr = &err
 	opt.Exit = true
