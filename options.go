@@ -39,6 +39,8 @@ type Options struct {
 	RegularFileOrder bool
 	// DontCloseFiles ignores file closing at the end of [Context.Shutdown].
 	DontCloseFiles bool
+	// NoWait will not call [Context.Wait] in the end of the [Start] function.
+	NoWait bool
 }
 
 // AutoShutdown will trigger [Context.Shutdown] when underlying context is closed.
@@ -108,6 +110,13 @@ func WithLogger(l Logger) Option {
 func WithSignals(sig ...os.Signal) Option {
 	return func(s *Options) {
 		s.Signals = sig
+	}
+}
+
+// WithNoWait will not call [Context.Wait] in the end of the [Start] function.
+func WithNoWait() Option {
+	return func(s *Options) {
+		s.NoWait = true
 	}
 }
 
