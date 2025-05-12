@@ -101,9 +101,8 @@ func Start(run func(Context) error, log Logger, opts ...Option) {
 
 	defer func() {
 		if panicErr := recover(); panicErr != nil {
-			stack := string(debug.Stack())
-			err = fmt.Errorf("%+v\n%s", panicErr, stack)
-			log.Error("panic", "error", panicErr, "stack", stack)
+			stack := debug.Stack()
+			log.Error(string(stack), "error", panicErr)
 		}
 	}()
 
@@ -445,10 +444,14 @@ func newWaiter(ctx context.Context, foo ShutdownFunc, l Logger) *waiter {
 		defer close(w.done)
 		defer func() {
 			if panicErr := recover(); panicErr != nil {
-				stack := string(debug.Stack())
-				w.err = fmt.Errorf("%+v\n%s", panicErr, stack)
+				if w.err != nil {
+					w.err = fmt.Errorf("%w: %s", w.err, panicErr)
+				} else {
+					w.err = fmt.Errorf("%s", panicErr)
+				}
 				if l != nil {
-					l.Error("panic", "error", panicErr, "stack", stack)
+					stack := debug.Stack()
+					l.Error(string(stack), "error", w.err)
 				}
 			}
 		}()
