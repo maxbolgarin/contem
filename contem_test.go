@@ -1753,12 +1753,14 @@ func TestAutoShutdownWithError(t *testing.T) {
 
 		// Check that error was logged
 		found := false
+		logger.mu.Lock()
 		for _, errMsg := range logger.errors {
 			if strings.Contains(errMsg, "cannot shutdown") {
 				found = true
 				break
 			}
 		}
+		logger.mu.Unlock()
 
 		if !found {
 			t.Error("auto shutdown error should be logged")
@@ -1783,12 +1785,14 @@ func TestAutoShutdownWithError(t *testing.T) {
 		// Check that panic was recovered and logged
 		// The panic should be logged via the waiter's panic recovery or the main recoverPanic
 		found := false
+		logger.mu.Lock()
 		for _, errMsg := range logger.errors {
 			if strings.Contains(errMsg, "auto shutdown panic") {
 				found = true
 				break
 			}
 		}
+		logger.mu.Unlock()
 
 		if !found {
 			// The panic might be logged as a stack trace, so check for "panic" keyword
