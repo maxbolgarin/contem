@@ -6,49 +6,50 @@ import (
 	"time"
 )
 
-// Option is a function to change [Context] behaviour.
+// Option is a function to change [Context] behavior.
 type Option func(*Options)
 
-// Logger is an interface of a structural logger that is used in [Context.Shutdown] method.
-// It is used to log messages in case of error or during shutdown if you provide [WithLogger] option.
+// Logger is an interface of a structured logger that is used in the [Context.Shutdown] method.
+// It is used to log messages in case of error or during shutdown if you provide the [WithLogger] option.
 type Logger interface {
 	Info(msg string, args ...any)
 	Error(msg string, args ...any)
 }
 
-// Options contains all options to change [Context] behaviour.
+// Options contains all options to change [Context] behavior.
 type Options struct {
 	// BaseCtx is the base context for [Context] underlying context.
 	// It is used to cancel [Context]'s underlying context.
 	BaseCtx context.Context
-	// Signals is a list of signals that triggers context close, default is [syscall.SIGINT] and [syscall.SIGTERM].
+	// Signals is a list of signals that trigger context close, default is [syscall.SIGINT] and [syscall.SIGTERM].
 	Signals []os.Signal
 	// Log is a logger that is used in [Context.Shutdown] method to log errors and info messages.
 	Log Logger
 	// ShutdownTimeout is a timeout for context in every added Shutdown function.
 	// Default is 15 seconds.
 	ShutdownTimeout time.Duration
-	// OuterErr is an error for [Options.Exit] option to exit with 1 code if it is not nil even after successful shutdown.
+	// OuterErr is an error for [Options.Exit] option to exit with code 1 if it is not nil even after successful shutdown.
 	OuterErr *error
-	// ExitErrorCode is an error code to exit if [Options.Exit] option is true and an error occurred.
+	// ExitErrorCode is an error code to exit with if [Options.Exit] option is true and an error occurred.
 	ExitErrorCode int
-	// Exit calls [os.Exit] at the end of [Context.Shutdown] method with 1 code if there are errors, zero code otherwise.
+	// Exit calls [os.Exit] at the end of [Context.Shutdown] method with code 1 if there are errors, zero code otherwise.
 	Exit bool
 	// AutoShutdown will trigger [Context.Shutdown] when underlying context is closed.
 	AutoShutdown bool
 	// NoParallel will disable parallel shutdowns in [Context.Shutdown].
 	NoParallel bool
 	// RegularFileOrder will use regular file closing order in [Context.Shutdown].
-	// In default files are closed after all other shutdown/closing methods. With this option they are closed with them.
+	// By default files are closed after all other shutdown/closing methods. With this option they are closed with them.
 	RegularFileOrder bool
-	// DontCloseFiles ignores file closing at the end of [Context.Shutdown].
+	// DontCloseFiles ignores file closing at the end of [Context.Shutdown],
+	// so you rely on GC, which will close files after returning from main.
 	DontCloseFiles bool
-	// NoWait will not call [Context.Wait] in the end of the [Start] function.
+	// NoWait will not call [Context.Wait] at the end of the [Start] function.
 	NoWait bool
 }
 
 // AutoShutdown will trigger [Context.Shutdown] when underlying context is closed.
-// It runs a goroutine to check ctx.Done().
+// It runs a goroutine to check [context.Context.Done].
 // It is recommended to use [WithLogger] to get info about shutdown and [Exit] to stop the application after shutdown.
 func AutoShutdown() Option {
 	return func(s *Options) {
@@ -61,9 +62,9 @@ func WithAutoShutdown() Option {
 	return AutoShutdown()
 }
 
-// Exit calls [os.Exit] at the end of [Context.Shutdown] method with 1 code if there are errors, zero code otherwise.
-// It accepts outer error to exit with 1 code if it is not nil even after successful shutdown.
-// It also logs "cannot shutdown" message if shutdown failed and waits for 100ms to flush before exiting the program.
+// Exit calls [os.Exit] at the end of [Context.Shutdown] method with code 1 if there are errors, zero code otherwise.
+// It accepts an outer error to exit with code 1 if it is not nil even after successful shutdown.
+// It also logs a "cannot shutdown" message if shutdown failed and waits for 100ms to flush before exiting the program.
 // You can provide errorCode to call [os.Exit] with it in case of error.
 func Exit(err *error, errorCode ...int) Option {
 	return func(s *Options) {
@@ -82,7 +83,7 @@ func WithExit(err *error, errorCode ...int) Option {
 }
 
 // DontCloseFiles ignores file closing at the end of [Context.Shutdown],
-// so you rely on GC, that will close files after returning from main.
+// so you rely on GC, which will close files after returning from main.
 func DontCloseFiles() Option {
 	return func(s *Options) {
 		s.DontCloseFiles = true
@@ -94,8 +95,8 @@ func WithDontCloseFiles() Option {
 	return DontCloseFiles()
 }
 
-// RegularCloseFilesOrder adds file closers to the general order with another shutdown/closing methods.
-// In default files are closed after all other shutdown/closing methods. With this option they are closed with them.
+// RegularCloseFilesOrder adds file closers to the general order with other shutdown/closing methods.
+// By default files are closed after all other shutdown/closing methods. With this option they are closed with them.
 func RegularCloseFilesOrder() Option {
 	return func(s *Options) {
 		s.RegularFileOrder = true
@@ -135,7 +136,7 @@ func WithLogger(l Logger) Option {
 	}
 }
 
-// WithSignals sets signals that triggers context close, default is [syscall.SIGINT] and [syscall.SIGTERM].
+// WithSignals sets signals that trigger context close, default is [syscall.SIGINT] and [syscall.SIGTERM].
 func WithSignals(sig ...os.Signal) Option {
 	return func(s *Options) {
 		s.Signals = sig
@@ -149,7 +150,7 @@ func WithNoWait() Option {
 	}
 }
 
-// WithShutdownTimeout sets a timeout for context in every added Shutdown function.
+// WithShutdownTimeout sets a timeout for context in every added [ShutdownFunc] function.
 func WithShutdownTimeout(timeout time.Duration) Option {
 	return func(s *Options) {
 		s.ShutdownTimeout = timeout

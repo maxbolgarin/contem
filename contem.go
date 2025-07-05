@@ -1,5 +1,5 @@
-// Package contem provides a context for graceful shutdown an application,
-// based on the receiving interruption signal from the OS.
+// Package contem provides a context for graceful shutdown of applications,
+// based on receiving interruption signals from the OS.
 package contem
 
 import (
@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-// DefaultShutdownTimeout is the default timeout for context in every added Shutdown function.
+// DefaultShutdownTimeout is the default timeout for context in every added [ShutdownFunc] function.
 // Use [SetDefaultShutdownTimeout] to change the default timeout safely.
 const DefaultShutdownTimeout = 15 * time.Second
 
@@ -27,7 +27,7 @@ func init() {
 }
 
 // SetDefaultShutdownTimeout sets the default shutdown timeout safely.
-// This affects new contexts created without explicit timeout.
+// This affects new contexts created without an explicit timeout.
 func SetDefaultShutdownTimeout(timeout time.Duration) {
 	defaultShutdownTimeout.Store(int64(timeout))
 }
@@ -37,24 +37,24 @@ func GetDefaultShutdownTimeout() time.Duration {
 	return time.Duration(defaultShutdownTimeout.Load())
 }
 
-// ShutdownFunc represents a shutdown function.
+// ShutdownFunc represents a shutdown function that accepts a context and returns an error.
 type ShutdownFunc func(ctx context.Context) error
 
-// CloseFunc represents a close function from [io.Closer] interface.
+// CloseFunc represents a close function from the [io.Closer] interface.
 type CloseFunc func() error
 
 // Context is an interface that can be used in function definitions instead of [context.Context].
-// You can just replace context.Context with contem.Context and everything will be working the same.
+// You can just replace context.Context with contem.Context and everything will work the same.
 //
-// When you should use [Context] instead of [context.Context]?
-//  1. You want to shutdown gracefully all services, servers, databases, etc in a one place using a single method.
-//  2. You want to shutdown application using ctrl+c command.
-//  3. You have a closable resource in the internals of your program, that won't be returned to the caller (e.g. log file).
-//     You can add it to  the[Context] and you won't forget to close it.
+// When should you use [Context] instead of [context.Context]?
+//  1. You want to shutdown gracefully all services, servers, databases, etc in one place using a single method.
+//  2. You want to shutdown the application using ctrl+c command.
+//  3. You have a closable resource in the internals of your program that won't be returned to the caller (e.g. log file).
+//     You can add it to the [Context] and you won't forget to close it.
 //     Of course, GC will automatically close all files after returning from main(), but you shouldn't rely on it.
-//  4. You want to cancel provided context on the "child" level — this is a bad pattern, but there are some fatal cases
-//     like server errors (that runs in a separate goroutine) that should lead to an application graceful shutdown
-//     (using os.Exit is worse imo).
+//  4. You want to cancel the provided context on the "child" level — this is a bad pattern, but there are some fatal cases
+//     like server errors (that run in separate goroutines) that should lead to an application graceful shutdown
+//     (using [os.Exit] is worse in my opinion).
 type Context interface {
 	// Context is just a context wrapper to drop-off replacement of context.Context
 	context.Context
@@ -69,42 +69,42 @@ type Context interface {
 	// AddFunc adds a plain function to the list of functions that will be called in the [Context.Shutdown] method.
 	AddFunc(f func())
 
-	// AddFile adds a [File] to the list of functions that will be called in [Context.Shutdown] method
-	// after all another closing methods (they can produce output to files, for example).
+	// AddFile adds a [File] to the list of functions that will be called in the [Context.Shutdown] method
+	// after all other closing methods (they can produce output to files, for example).
 	AddFile(File)
 
-	// SetValue sets a value to the underlying context. You can get this value using [Context.Value] method.
-	// It updates original context.
+	// SetValue sets a value to the underlying context. You can get this value using the [Context.Value] method.
+	// It updates the original context.
 	SetValue(key, value any) Context
 
 	// Wait blocks until the channel is closed (receiving [syscall.SIGINT] and [syscall.SIGTERM] signals by default).
-	// It should be used in main() function after an application start to wait for a interruption.
+	// It should be used in the main() function after application start to wait for an interruption.
 	Wait()
 
 	// Cancel cancels an underlying context. Using this method is a bad practice, because it allows you to start
 	// [Context.Shutdown] from any place in your code, not only from main.
-	// It can be useful in some cases (e.g. handle [http.ListenAndServe] error), but it's not recommended.
+	// It can be useful in some cases (e.g. handle [http.Server.ListenAndServe] error), but it's not recommended.
 	Cancel()
 
-	// Shutdown cancels an underlying context, then calls every added function with [ShutdownTimeout] in parallel.
-	// It will return an error if timeout exceeds or if any of shutdown functions returns error.
+	// Shutdown cancels an underlying context, then calls every added function with shutdown timeout in parallel.
+	// It will return an error if the timeout is exceeded or if any of the shutdown functions returns an error.
 	Shutdown() error
 }
 
-// File is an interface with operation that need to be called during file closing.
+// File is an interface with operations that need to be called during file closing.
 type File interface {
 	Sync() error
 	Close() error
 }
 
-// Start starts a new application with a given run function and logger. Run fuction should be non blocking.
-// It should init application, start workers in separate goroutines and return error in case of initialization failure.
-// [Start] will wait for interrupt signals and then calls [Context.Shutdown]. It uses logger to log run() error.
-// Run function accepts [Context] as an argument. So you can add shutdown and cancel methods to it.
-// If an error occurs during run, it will log it and exit with 1 code.
-// [AutoShutdown], [Exit], [WithLogger] options are no-op because applied by default.
-// Option [WithNoWait] will not call [Context.Wait] in the end of the [Start] function,
-// so [Start] will return immediately after run() function call.
+// Start starts a new application with a given run function and logger. The run function should be non-blocking.
+// It should initialize the application, start workers in separate goroutines and return an error in case of initialization failure.
+// Start will wait for interrupt signals and then call [Context.Shutdown]. It uses the logger to log run() errors.
+// The run function accepts [Context] as an argument, so you can add shutdown and cancel methods to it.
+// If an error occurs during run, it will log it and exit with code 1.
+// [AutoShutdown], [Exit], [WithLogger] options are no-op because they are applied by default.
+// Option [WithNoWait] will not call [Context.Wait] at the end of the [Start] function,
+// so [Start] will return immediately after the run() function call.
 func Start(run func(Context) error, log Logger, opts ...Option) {
 	var err error
 
@@ -259,8 +259,8 @@ func (ct *Contem) AddFunc(f func()) {
 	})
 }
 
-// AddFile adds a [File] to the list of functions that will be called in [Context.Shutdown] method
-// after all another closing methods (they can produce output to files, for example).
+// AddFile adds a [File] to the list of functions that will be called in the [Context.Shutdown] method
+// after all other closing methods (they can produce output to files, for example).
 func (ct *Contem) AddFile(f File) {
 	if f == nil {
 		return // Silently ignore nil files to prevent panics
@@ -289,8 +289,8 @@ func (ct *Contem) AddFile(f File) {
 	}
 }
 
-// SetValue sets a value to the underlying context. You can get this value using [Context.Value] method.
-// It updates original context.
+// SetValue sets a value to the underlying context. You can get this value using the [Context.Value] method.
+// It updates the original context.
 func (ct *Contem) SetValue(key, value any) Context {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
@@ -300,7 +300,7 @@ func (ct *Contem) SetValue(key, value any) Context {
 }
 
 // Wait blocks until the channel is closed (receiving [syscall.SIGINT] and [syscall.SIGTERM] signals by default).
-// It should be used in main() function after an application start to wait for a interruption.
+// It should be used in the main() function after application start to wait for an interruption.
 func (ct *Contem) Wait() {
 	if ch := ct.ctx.Done(); ch != nil {
 		<-ch
@@ -309,15 +309,15 @@ func (ct *Contem) Wait() {
 	// so we return immediately rather than blocking forever
 }
 
-// Cancel cancels an underlying context. Using this method is a bad practice, because it allows you to
-// [Context.Shutdown] from any place inside your code, not only from main.
+// Cancel cancels an underlying context. Using this method is a bad practice, because it allows you to start
+// Context.Shutdown from any place in your code, not only from main.
 // It can be useful in some cases (e.g. handle [http.ListenAndServe] error), but it's not recommended.
 func (ct *Contem) Cancel() {
 	ct.cancel()
 }
 
-// Shutdown cancels an underlying context, then calls every added function with timeout in parallel.
-// It will return an error if timeout exceeds or any of shutdown functions returns error.
+// Shutdown cancels an underlying context, then calls every added function with [ShutdownTimeout] in parallel.
+// It will return an error if the timeout is exceeded or if any of the shutdown functions returns an error.
 func (ct *Contem) Shutdown() error {
 	defer recoverPanic(ct.log)
 
