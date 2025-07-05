@@ -85,7 +85,7 @@ type File interface {
 // [Start] will wait for interrupt signals and then calls [Context.Shutdown]. It uses logger to log run() error.
 // Run function accepts [Context] as an argument. So you can add shutdown and cancel methods to it.
 // If an error occurs during run, it will log it and exit with 1 code.
-// [Exit] and [WithLogger] options are no-op because applied by default.
+// [AutoShutdown], [Exit], [WithLogger] options are no-op because applied by default.
 // Option [WithNoWait] will not call [Context.Wait] in the end of the [Start] function,
 // so [Start] will return immediately after run() function call.
 func Start(run func(Context) error, log Logger, opts ...Option) {
@@ -119,6 +119,8 @@ type Contem struct {
 
 	ctx    context.Context
 	cancel func()
+
+	shutdownTimeout time.Duration
 
 	log           Logger
 	outerErr      *error
@@ -155,16 +157,17 @@ func NewWithOptions(opts Options) *Contem {
 	ctx, cancel := signal.NotifyContext(opts.BaseCtx, opts.Signals...)
 
 	ct := &Contem{
-		ctx:           ctx,
-		cancel:        cancel,
-		log:           opts.Log,
-		outerErr:      opts.OuterErr,
-		exitErrorCode: opts.ExitErrorCode,
-		noParallel:    opts.NoParallel,
-		exit:          opts.Exit,
-		logging:       opts.Log != nil,
-		noFiles:       opts.DontCloseFiles,
-		regularOrder:  opts.RegularFileOrder,
+		ctx:             ctx,
+		cancel:          cancel,
+		log:             opts.Log,
+		outerErr:        opts.OuterErr,
+		exitErrorCode:   opts.ExitErrorCode,
+		noParallel:      opts.NoParallel,
+		exit:            opts.Exit,
+		logging:         opts.Log != nil,
+		noFiles:         opts.DontCloseFiles,
+		regularOrder:    opts.RegularFileOrder,
+		shutdownTimeout: opts.ShutdownTimeout,
 	}
 
 	if opts.AutoShutdown {
@@ -290,6 +293,10 @@ func (ct *Contem) Shutdown() error {
 		ws    = newWaiterSet(ct.log)
 	)
 
+	if ct.shutdownTimeout == 0 {
+		ct.shutdownTimeout = ShutdownTimeout
+	}
+
 	errs := ct.shutdown(ws, start)
 
 	errsFiles := ct.closeFiles(ws, start)
@@ -358,14 +365,14 @@ func (ct *Contem) shutdown(ws *waiterSet, start time.Time) []error {
 		return errs
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(ct.ctx, ShutdownTimeout)
+	shutdownCtx, cancel := context.WithTimeout(ct.ctx, ct.shutdownTimeout)
 	defer cancel()
 
 	for _, f := range ct.funcs {
 		ws.add(shutdownCtx, f)
 	}
 
-	err := ws.await(start, ShutdownTimeout)
+	err := ws.await(start, ct.shutdownTimeout)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("shutdown: %w", err))
 	}
@@ -398,12 +405,9 @@ func (ct *Contem) closeFiles(ws *waiterSet, start time.Time) []error {
 		})
 	}
 
-	timeout := ShutdownTimeout - time.Since(start)
-	if timeout < ShutdownTimeout/5 {
-		timeout = ShutdownTimeout / 5
-	}
+	timeout := max(ct.shutdownTimeout-time.Since(start), ct.shutdownTimeout/5)
 
-	err := ws.await(time.Now(), timeout)
+	err := ws.await(start, timeout)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("close files: %w", err))
 	}

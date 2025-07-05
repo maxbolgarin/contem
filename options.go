@@ -3,6 +3,7 @@ package contem
 import (
 	"context"
 	"os"
+	"time"
 )
 
 // Option is a function to change [Context] behaviour.
@@ -24,12 +25,15 @@ type Options struct {
 	Signals []os.Signal
 	// Log is a logger that is used in [Context.Shutdown] method to log errors and info messages.
 	Log Logger
+	// ShutdownTimeout is a timeout for context in every added Shutdown function.
+	// Default is 15 seconds.
+	ShutdownTimeout time.Duration
 	// OuterErr is an error for [Options.Exit] option to exit with 1 code if it is not nil even after successful shutdown.
 	OuterErr *error
-	// Exit calls [os.Exit] at the end of [Context.Shutdown] method with 1 code if there are errors, zero code otherwise.
-	Exit bool
 	// ExitErrorCode is an error code to exit if [Options.Exit] option is true and an error occurred.
 	ExitErrorCode int
+	// Exit calls [os.Exit] at the end of [Context.Shutdown] method with 1 code if there are errors, zero code otherwise.
+	Exit bool
 	// AutoShutdown will trigger [Context.Shutdown] when underlying context is closed.
 	AutoShutdown bool
 	// NoParallel will disable parallel shutdowns in [Context.Shutdown].
@@ -142,6 +146,13 @@ func WithSignals(sig ...os.Signal) Option {
 func WithNoWait() Option {
 	return func(s *Options) {
 		s.NoWait = true
+	}
+}
+
+// WithShutdownTimeout sets a timeout for context in every added Shutdown function.
+func WithShutdownTimeout(timeout time.Duration) Option {
+	return func(s *Options) {
+		s.ShutdownTimeout = timeout
 	}
 }
 
