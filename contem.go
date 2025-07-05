@@ -98,13 +98,7 @@ func Start(run func(Context) error, log Logger, opts ...Option) {
 
 	ctx := NewWithOptions(opt)
 	defer ctx.Shutdown()
-
-	defer func() {
-		if panicErr := recover(); panicErr != nil {
-			stack := debug.Stack()
-			log.Error(string(stack), "error", panicErr)
-		}
-	}()
+	defer recoverPanic(log)
 
 	if err = run(ctx); err != nil {
 		log.Error("cannot run application", "error", err)
@@ -271,6 +265,8 @@ func (ct *Contem) Cancel() {
 // Shutdown cancels an underlying context, then calls every added function with timeout in parallel.
 // It will return an error if timeout exceeds or any of shutdown functions returns error.
 func (ct *Contem) Shutdown() error {
+	defer recoverPanic(ct.log)
+
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 
@@ -302,6 +298,16 @@ func (ct *Contem) Shutdown() error {
 			ct.log.Error("cannot shutdown", "error", serr)
 		}
 		ct.outerErr = &serr // we will os.Exit(1) in any way
+	}
+
+	// if you add here recoverPanic function it will not work
+	if panicErr := recover(); panicErr != nil {
+		stack := debug.Stack()
+		if ct.log != nil {
+			ct.log.Error(string(stack), "panic", panicErr)
+		} else {
+			fmt.Fprintln(os.Stderr, "panic:", panicErr, "\n\n", string(stack))
+		}
 	}
 
 	if ct.exit {
@@ -502,4 +508,15 @@ func joinErrors(errs []error) error {
 	}
 
 	return errors.New(string(b))
+}
+
+func recoverPanic(l Logger) {
+	if panicErr := recover(); panicErr != nil {
+		stack := debug.Stack()
+		if l != nil {
+			l.Error(string(stack), "panic", panicErr)
+		} else {
+			fmt.Fprintln(os.Stderr, "panic:", panicErr, "\n\n", string(stack))
+		}
+	}
 }

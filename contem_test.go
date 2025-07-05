@@ -485,21 +485,15 @@ func TestEmpty(t *testing.T) {
 	}
 }
 
-func TestExit(t *testing.T) {
+func TestShutdownPanic(t *testing.T) {
+	ctx := contem.New()
 	defer func() {
 		if r := recover(); r != nil {
-			if !strings.Contains(r.(string), "os.Exit(0)") {
-				t.Errorf("unexpected panic: %v", r)
-			}
+			t.Errorf("unexpected panic: %v", r)
 		}
 	}()
-	var err error
-	ctx := contem.New(contem.Exit(&err, 123))
-	ctx.Add(func(ctx context.Context) error {
-		return nil
-	})
-	ctx.Shutdown()
-	t.Error("should exit")
+	defer ctx.Shutdown()
+	panic("A")
 }
 
 type file struct {
@@ -558,7 +552,7 @@ func wait(ctx context.Context, v *atomic.Bool, tm time.Duration) bool {
 
 type testLogze struct{}
 
-func (testLogze) Error(err error, s string, args ...any) {
+func (testLogze) Error(s string, args ...any) {
 	slog.Error(s, args...)
 }
 
