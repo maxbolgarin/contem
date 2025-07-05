@@ -1,97 +1,343 @@
-# contem - drop-in `context.Context` replacement
+# contem - Graceful Shutdown Made Simple
 
-[![Go Version][version-img]][doc] [![GoDoc][doc-img]][doc] [![Build][ci-img]][ci] [![GoReport][report-img]][report]
+[![Go Version][version-img]][doc] [![GoDoc][doc-img]][doc] [![Build][ci-img]][ci] [![Coverage][coverage-img]][coverage] [![GoReport][report-img]][report]
 
 <picture>
-  <img src=".github/logo.jpg" width="500" alt="contem logo">
+  <img src=".github/logo.jpg" width="600" alt="contem logo">
 </picture>
 
+**contem** is a zero-dependency, drop-in replacement for `context.Context` that makes graceful shutdown trivial. Stop worrying about signal handling, resource cleanup, and shutdown coordination—just add your cleanup functions and let **contem** handle the rest.
 
-## Overview
+## 🚀 Quick Start
 
-`go get -u github.com/maxbolgarin/contem`
+```bash
+go get -u github.com/maxbolgarin/contem
+```
 
-**contem** is a zero-dependency drop-in `context.Context` replacement for graceful shutdown. It is lightweight and easy to use: just create a `func run(Context) error { ... }`, where you should `Add` your shutdown methods to the `Context`, and then call `Start` function. **contem** will graceful shutdown and release all added resources with error handling.
-
-* **Graceful shutdown**: your application will process all incoming requests, close all allocated resources and save data from the buffer before exiting.
-* **Ctrl+C support**: you can catch `Ctrl+C` signals and gracefully shutdown the application out of the box without remebering how to use `signal.Notify`.
-* **Error handling**: you should handle `defer db.Close()` errors to prevent from an unexpected behaviour. With **contem** you just `AddClose` your closer instead of writing `defer func() {...}`.
-* **Less code**: you cannot use `log.Fatal()`, because it calls `os.Exit()` and ignores all defer functions. You should write a shutdown code in every `if err != nil {...}` in the main function. With **contem** you can exit right after a shutdown by using `Exit()` option.
-* **Handle file close**: how to close a file when an application stops, if it was opened in the internals of your code? Should you return it right to the main or open at the beginning and propogate throught the app? **contem** allows you to add a `File` to the `Context`, than sync and close it during global shutdown.
-
-
-## Getting Started
-
-You can find some examples [here](examples)
-
-
-### Example with Start function
+### The Simplest Example
 
 ```go
+package main
+
+import (
+    "log/slog"
+    "net/http"
+    "github.com/maxbolgarin/contem"
+)
+
 func main() {
-	contem.Start(run, slog.Default())
+    contem.Start(run, slog.Default())
 }
 
 func run(ctx contem.Context) error {
-  srv := http.Server{Addr: ":8080"}
-  ctx.Add(srv.Shutdown)
-
-  // TODO: add some code
-  
-  return nil
+    srv := &http.Server{Addr: ":8080"}
+    ctx.Add(srv.Shutdown) // That's it! Server will shutdown gracefully on Ctrl+C
+    
+    go func() {
+        if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+            slog.Error("Server failed", "error", err)
+            ctx.Cancel() // Trigger graceful shutdown of the whole application on error in an another goroutine
+        }
+    }()
+    
+    return nil
 }
 ```
 
-You should write an application logic in the `run` function. It should be non blocking. It should init application, start wotrkers in a separate goroutines and returns error in case of initialization failure. **contem** will wait for interrupt signals and then calls `Context.Shutdown`. Run function accepts `Context` as an argument, so you can add shutdown and cancel methods to it.
+Press `Ctrl+C` and watch your server shutdown gracefully! 🎉
 
-Here is a full example: [click me](examples/start/main.go)
+## 🔍 Why contem?
 
+### The Problem
 
-
-### Advanced usage
+Traditional Go applications require boilerplate for graceful shutdown:
 
 ```go
-// Step 1. Create context and defer Shutdown
-var err error
-ctx := contem.New(contem.WithLogger(slog.Default()), contem.Exit(&err))
-defer ctx.Shutdown()
-
-// Step 2. Create a server and add server's shutdown method to the context
-var server *http.Server
-srv, err = server.Start(ctx)
-if err != nil {
-    slog.Error("failed to create server", "error", err)
-    return
+// ❌ Traditional approach - lots of boilerplate
+func main() {
+    srv := &http.Server{Addr: ":8080"}
+    
+    // Signal handling boilerplate
+    quit := make(chan os.Signal, 1)
+    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+    
+    go func() {
+        if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+            log.Fatalf("Server failed: %v", err) // ❌ log.Fatal ignores cleanup!
+        }
+    }()
+    
+    <-quit
+    log.Println("Shutting down server...")
+    
+    // Manual cleanup with timeout handling
+    ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+    defer cancel()
+    
+    if err := srv.Shutdown(ctx); err != nil {
+        log.Fatalf("Server forced to shutdown: %v", err)
+    }
+    
+    // What about database connections? File handles? Other resources?
+    // More cleanup code needed...
 }
-ctx.Add(srv.Shutdown)
-
-// Step 3. Wait for the interruption signal
-ctx.Wait()
 ```
 
-What is going on in this snippet of code?
+### The Solution
 
-1. Create a `contem.Context` and defer `Shutdown`:
-    * Pass an error to `Exit` to exit with `1` code if there will be errors in future (you should not use `:=` because it will reassign the error variable and it will exit with `0` code)
-    * Add `slog` as a logger. It will print `Info` message at the start of shutdown and `Error` message in case of shutdown error. It is useful with `Exit`, because you won't be able to handle error from `Shutdown` in this case.
-2. Create a server and add server's shutdown method to the context. You can return from the main without concerns because you have defered `Shutdown` earlier.
-3. Wait for the interruption signal. It will block code until `SIGTERM` or `SIGINT` signal is received. After that it will call `Shutdown` and exit the application.
+```go
+// ✅ contem approach - clean and simple
+func main() {
+    contem.Start(run, slog.Default())
+}
 
+func run(ctx contem.Context) error {
+    file, err := os.OpenFile("important.log", ...) // Open file
+    if err != nil {
+        return err
+    }
+    ctx.AddFile(file) // File will be synced and closed on shutdown
+    
+    db, err := sql.Open("postgres", "...")
+    if err != nil {
+        return err
+    }
+    ctx.AddClose(db.Close) // Database will close gracefully too
 
-## Contributing
+    app, err := some.Init(db, file)
+    if err != nil {
+        return err
+    }
+    ctx.Add(app.Shutdown) // Shutdown will be called on Ctrl+C
+    
+    return nil
+}
+```
 
-If you'd like to contribute to **contem**, make a fork and submit a pull request. You also can open an issue or text me on Telegram.
+## 🌟 Key Benefits
 
+### 🎯 **Drop-in Replacement**
+Replace `context.Context` with `contem.Context` in your function signatures. Everything else works the same.
 
-## License
+### ⚡ **Zero Dependencies**
+Pure Go standard library. No external dependencies to worry about.
+
+### 🛡️ **Bulletproof Error Handling**
+- No more `log.Fatal()` ignoring your cleanup code
+- Automatic timeout handling for shutdown functions
+- Proper error aggregation and reporting
+
+### 🔄 **Resource Management**
+- Automatic cleanup of databases, files, connections
+- Proper shutdown order (general resources first, files last)
+- Parallel shutdown for better performance (you can disable it with `contem.WithNoParallel()` option)
+
+### 📁 **File Safety**
+Special handling for files that need syncing before closing:
+
+```go
+file, _ := os.Create("important.log")
+ctx.AddFile(file) // Automatically syncs AND closes on shutdown
+```
+
+### 🎛️ **Flexible Configuration**
+Fine-tune behavior with options:
+
+```go
+ctx := contem.New(
+    contem.WithLogger(logger),
+    contem.WithShutdownTimeout(30*time.Second),
+    contem.WithExit(&err), // Exit with proper code
+)
+```
+
+## 📚 Complete Example: Web Server with Database
+
+```go
+package main
+
+import (
+    "database/sql"
+    "log/slog"
+    "net/http"
+    "time"
+    
+    "github.com/maxbolgarin/contem"
+    _ "github.com/lib/pq"
+)
+
+func main() {
+    contem.Start(run, slog.Default())
+}
+
+func run(ctx contem.Context) error {
+    logFile, err := os.OpenFile("app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+    if err != nil {
+        return err
+    }
+
+    // Automatically syncs and closes file in the last order to log every error during shutdown
+    ctx.AddFile(logFile)
+
+    // Set default logger to use the file
+    slog.SetDefault(slog.New(slog.NewTextHandler(logFile, nil))) 
+    
+    db, err := sql.Open("postgres", "postgres://localhost/mydb?sslmode=disable")
+    if err != nil {
+        return err // Will log error and close logFile because it has been added to the context
+    }
+    // Will close database connection gracefully on shutdown
+    ctx.AddClose(db.Close) 
+    
+    mux := http.NewServeMux()
+    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        w.Write([]byte("Hello, World!"))
+    })
+    
+    srv := &http.Server{
+        Addr:    ":8080",
+        Handler: mux,
+    }
+   
+    go func() {
+      slog.Info("Server starting", "addr", srv.Addr)
+      if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+          slog.Error("Server failed", "error", err)
+          ctx.Cancel() // Trigger graceful shutdown and release all added resources
+      }
+    }()
+
+    // Will shutdown HTTP server gracefully on Ctrl+C
+    ctx.Add(srv.Shutdown) 
+
+    return nil
+}
+```
+
+## 🔧 API Reference
+
+### Core Functions
+
+| Function | Description |
+|----------|-------------|
+| `contem.Start(run, logger, opts...)` | Easiest way to start an app with graceful shutdown |
+| `contem.New(opts...)` | Create a new context with options |
+| `contem.NewEmpty()` | Create empty context for testing |
+
+### Context Methods
+
+| Method | Description |
+|--------|-------------|
+| `Add(ShutdownFunc)` | Add function that accepts context and returns error |
+| `AddClose(CloseFunc)` | Add function that returns error (like `io.Closer`) |
+| `AddFunc(func())` | Add simple function with no return |
+| `AddFile(File)` | Add file that needs sync + close |
+| `Wait()` | Block until interrupt signal received |
+| `Cancel()` | Manually trigger shutdown (not recommended) |
+| `Shutdown()` | Execute all shutdown functions |
+
+### Configuration Options
+
+| Option | Description |
+|--------|-------------|
+| `WithLogger(logger)` | Add structured logging |
+| `WithShutdownTimeout(duration)` | Set shutdown timeout (default: 15s) |
+| `WithExit(&err, code...)` | Exit process after shutdown |
+| `WithAutoShutdown()` | Auto-shutdown when context cancelled |
+| `WithNoParallel()` | Disable parallel shutdown |
+| `WithSignals(signals...)` | Custom signals (default: SIGINT, SIGTERM) |
+| `WithDontCloseFiles()` | Skip file closing |
+| `WithRegularCloseFilesOrder()` | Close files with other resources |
+
+## 🔍 Troubleshooting
+
+### Common Issues
+
+**Q: My shutdown functions are timing out**
+```go
+// Increase timeout
+ctx := contem.New(contem.WithShutdownTimeout(60*time.Second))
+```
+
+**Q: I need custom signals**
+```go
+// Listen for custom signals
+ctx := contem.New(contem.WithSignals(syscall.SIGUSR1, syscall.SIGUSR2))
+```
+
+**Q: Shutdown is too slow**
+```go
+// Files close after other resources by default
+// To close everything together:
+ctx := contem.New(contem.RegularCloseFilesOrder())
+```
+
+**Q: I want to see what's happening during shutdown**
+```go
+// Add logging
+ctx := contem.New(contem.WithLogger(slog.Default()))
+```
+
+## 🔄 Migration Guide
+
+### From Standard Context
+
+```go
+// Before
+func MyFunction(ctx context.Context) error {
+    // ...
+}
+
+// After - just change the type!
+func MyFunction(ctx contem.Context) error {
+    // All context.Context methods still work
+    // Plus you get Add(), AddClose(), etc.
+}
+```
+
+### From Manual Signal Handling
+
+```go
+// Before
+func main() {
+    quit := make(chan os.Signal, 1)
+    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+    
+    // ... setup code ...
+    
+    <-quit
+    // Manual cleanup
+}
+
+// After
+func main() {
+    contem.Start(run, logger)
+}
+
+func run(ctx contem.Context) error {
+    // Setup code + add cleanup functions
+    return nil
+}
+```
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+
+## 📄 License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
-[LICENSE]: LICENSE.txt
-[version-img]: https://img.shields.io/badge/Go-%3E%3D%201.19-%23007d9c
+---
+
+⭐ **Star this repo if it helped you build better Go applications!**
+
+[version-img]: https://img.shields.io/badge/Go-%3E%3D%201.21-%23007d9c
 [doc-img]: https://pkg.go.dev/badge/github.com/maxbolgarin/contem
 [doc]: https://pkg.go.dev/github.com/maxbolgarin/contem
 [ci-img]: https://github.com/maxbolgarin/contem/actions/workflows/go.yml/badge.svg
 [ci]: https://github.com/maxbolgarin/contem/actions
 [report-img]: https://goreportcard.com/badge/github.com/maxbolgarin/contem
 [report]: https://goreportcard.com/report/github.com/maxbolgarin/contem
+[coverage-img]: https://codecov.io/gh/maxbolgarin/contem/branch/main/graph/badge.svg
+[coverage]: https://codecov.io/gh/maxbolgarin/contem
