@@ -52,6 +52,11 @@ func AutoShutdown() Option {
 	}
 }
 
+// WithAutoShutdown is an alias for [AutoShutdown] option.
+func WithAutoShutdown() Option {
+	return AutoShutdown()
+}
+
 // Exit calls [os.Exit] at the end of [Context.Shutdown] method with 1 code if there are errors, zero code otherwise.
 // It accepts outer error to exit with 1 code if it is not nil even after successful shutdown.
 // It also logs "cannot shutdown" message if shutdown failed and waits for 100ms to flush before exiting the program.
@@ -67,12 +72,22 @@ func Exit(err *error, errorCode ...int) Option {
 	}
 }
 
+// WithExit is an alias for [Exit] option.
+func WithExit(err *error, errorCode ...int) Option {
+	return Exit(err, errorCode...)
+}
+
 // DontCloseFiles ignores file closing at the end of [Context.Shutdown],
 // so you rely on GC, that will close files after returning from main.
 func DontCloseFiles() Option {
 	return func(s *Options) {
 		s.DontCloseFiles = true
 	}
+}
+
+// WithDontCloseFiles is an alias for [DontCloseFiles] option.
+func WithDontCloseFiles() Option {
+	return DontCloseFiles()
 }
 
 // RegularCloseFilesOrder adds file closers to the general order with another shutdown/closing methods.
@@ -83,12 +98,22 @@ func RegularCloseFilesOrder() Option {
 	}
 }
 
+// WithRegularCloseFilesOrder is an alias for [RegularCloseFilesOrder] option.
+func WithRegularCloseFilesOrder() Option {
+	return RegularCloseFilesOrder()
+}
+
 // NoParallel disables parallel calling of shutdown methods.
 // With this option [Context.Shutdown] closes them sequentially in the order they were added.
 func NoParallel() Option {
 	return func(s *Options) {
 		s.NoParallel = true
 	}
+}
+
+// WithNoParallel is an alias for [NoParallel] option.
+func WithNoParallel() Option {
+	return NoParallel()
 }
 
 // WithBaseContext sets the base context for [Context] underlying context.

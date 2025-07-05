@@ -179,9 +179,14 @@ func NewWithOptions(opts Options) *Contem {
 	return ct
 }
 
+// NewEmpty returns a dummy [Context] with [context.Background] context. It is useful for tests.
+func NewEmpty() *Contem {
+	return &Contem{ctx: context.Background(), cancel: func() {}}
+}
+
 // Empty returns a dummy [Context] with [context.Background] context. It is useful for tests.
 func Empty() *Contem {
-	return &Contem{ctx: context.Background(), cancel: func() {}}
+	return NewEmpty()
 }
 
 // Add adds a shutdown function to the list of functions that will be called in the [Context.Shutdown] method.
