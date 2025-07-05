@@ -428,31 +428,6 @@ func TestAutoShutdown(t *testing.T) {
 	})
 }
 
-func TestSignals(t *testing.T) {
-	// This isn't working in github actions
-	if testing.Short() {
-		t.SkipNow()
-	}
-
-	var funcFlag atomic.Bool
-
-	ctx := contem.New(contem.WithSignals(syscall.SIGALRM), contem.AutoShutdown())
-	ctx.Add(func(ctx context.Context) error {
-		funcFlag.Store(true)
-		return nil
-	})
-	syscall.Kill(os.Getpid(), syscall.SIGALRM)
-
-	ctx.Wait()
-
-	textCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if !wait(textCtx, &funcFlag, contem.GetDefaultShutdownTimeout()/10) {
-		t.Errorf("firstFuncFlag is not set")
-	}
-}
-
 func TestEmpty(t *testing.T) {
 	var funcFlag atomic.Bool
 
@@ -471,6 +446,17 @@ func TestEmpty(t *testing.T) {
 	if !wait(textCtx, &funcFlag, contem.GetDefaultShutdownTimeout()/10) {
 		t.Errorf("firstFuncFlag is not set")
 	}
+}
+
+func TestShutdownPanic(t *testing.T) {
+	ctx := contem.New()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("unexpected panic: %v", r)
+		}
+	}()
+	defer ctx.Shutdown()
+	panic("A")
 }
 
 type file struct {

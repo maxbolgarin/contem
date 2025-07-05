@@ -189,13 +189,7 @@ func NewWithOptions(opts Options) *Contem {
 
 	if opts.AutoShutdown {
 		go func() {
-			defer func() {
-				if panicErr := recover(); panicErr != nil {
-					if ct.log != nil {
-						ct.log.Error("panic in AutoShutdown goroutine", "panic", panicErr)
-					}
-				}
-			}()
+			defer recoverPanic(ct.log)
 
 			<-ctx.Done()
 			if err := ct.Shutdown(); err != nil && ct.log != nil {
