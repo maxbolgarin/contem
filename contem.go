@@ -9,16 +9,33 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 )
 
-// ShutdownTimeout is a timeout for context in every added Shutdown function.
-// You can change it before calling [Context.Shutdown] method to change shutdown timeout,
-// it may be useful if you have a lot of shutdown functions or they are slow.
-var ShutdownTimeout = 15 * time.Second
+// DefaultShutdownTimeout is the default timeout for context in every added Shutdown function.
+// Use [SetDefaultShutdownTimeout] to change the default timeout safely.
+const DefaultShutdownTimeout = 15 * time.Second
+
+var defaultShutdownTimeout atomic.Int64
+
+func init() {
+	defaultShutdownTimeout.Store(int64(DefaultShutdownTimeout))
+}
+
+// SetDefaultShutdownTimeout sets the default shutdown timeout safely.
+// This affects new contexts created without explicit timeout.
+func SetDefaultShutdownTimeout(timeout time.Duration) {
+	defaultShutdownTimeout.Store(int64(timeout))
+}
+
+// GetDefaultShutdownTimeout returns the current default shutdown timeout.
+func GetDefaultShutdownTimeout() time.Duration {
+	return time.Duration(defaultShutdownTimeout.Load())
+}
 
 // ShutdownFunc represents a shutdown function.
 type ShutdownFunc func(ctx context.Context) error
@@ -172,6 +189,14 @@ func NewWithOptions(opts Options) *Contem {
 
 	if opts.AutoShutdown {
 		go func() {
+			defer func() {
+				if panicErr := recover(); panicErr != nil {
+					if ct.log != nil {
+						ct.log.Error("panic in AutoShutdown goroutine", "panic", panicErr)
+					}
+				}
+			}()
+
 			<-ctx.Done()
 			if err := ct.Shutdown(); err != nil && ct.log != nil {
 				ct.log.Error("cannot shutdown", "error", err)
@@ -194,6 +219,10 @@ func Empty() *Contem {
 
 // Add adds a shutdown function to the list of functions that will be called in the [Context.Shutdown] method.
 func (ct *Contem) Add(f ShutdownFunc) {
+	if f == nil {
+		return // Silently ignore nil functions to prevent panics
+	}
+
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 
@@ -203,6 +232,10 @@ func (ct *Contem) Add(f ShutdownFunc) {
 // AddClose adds a close function (from [io.Closer]) to the list of functions
 // that will be called in the [Context.Shutdown] method.
 func (ct *Contem) AddClose(f CloseFunc) {
+	if f == nil {
+		return // Silently ignore nil functions to prevent panics
+	}
+
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 
@@ -213,6 +246,10 @@ func (ct *Contem) AddClose(f CloseFunc) {
 
 // AddFunc adds a plain function to the list of functions that will be called in the [Context.Shutdown] method.
 func (ct *Contem) AddFunc(f func()) {
+	if f == nil {
+		return // Silently ignore nil functions to prevent panics
+	}
+
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 
@@ -225,6 +262,10 @@ func (ct *Contem) AddFunc(f func()) {
 // AddFile adds a [File] to the list of functions that will be called in [Context.Shutdown] method
 // after all another closing methods (they can produce output to files, for example).
 func (ct *Contem) AddFile(f File) {
+	if f == nil {
+		return // Silently ignore nil files to prevent panics
+	}
+
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 
@@ -251,6 +292,9 @@ func (ct *Contem) AddFile(f File) {
 // SetValue sets a value to the underlying context. You can get this value using [Context.Value] method.
 // It updates original context.
 func (ct *Contem) SetValue(key, value any) Context {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+
 	ct.ctx = context.WithValue(ct.ctx, key, value)
 	return ct
 }
@@ -261,6 +305,8 @@ func (ct *Contem) Wait() {
 	if ch := ct.ctx.Done(); ch != nil {
 		<-ch
 	}
+	// If ctx.Done() returns nil, the context is never cancelled (like context.Background()),
+	// so we return immediately rather than blocking forever
 }
 
 // Cancel cancels an underlying context. Using this method is a bad practice, because it allows you to
@@ -294,7 +340,7 @@ func (ct *Contem) Shutdown() error {
 	)
 
 	if ct.shutdownTimeout == 0 {
-		ct.shutdownTimeout = ShutdownTimeout
+		ct.shutdownTimeout = GetDefaultShutdownTimeout()
 	}
 
 	errs := ct.shutdown(ws, start)
@@ -400,6 +446,7 @@ func (ct *Contem) closeFiles(ws *waiterSet, start time.Time) []error {
 	}
 
 	for _, f := range ct.fileClosers {
+		f := f // capture loop variable
 		ws.add(context.Background(), func(context.Context) error {
 			return f()
 		})
@@ -431,10 +478,7 @@ func (s *waiterSet) add(ctx context.Context, foo ShutdownFunc) {
 func (s *waiterSet) await(start time.Time, timeout time.Duration) error {
 	var errs []error
 	for _, w := range s.ws {
-		currentTimeout := timeout - time.Since(start)
-		if currentTimeout < 0 {
-			currentTimeout = 0
-		}
+		currentTimeout := max(timeout-time.Since(start), 0)
 		err := w.await(currentTimeout)
 		if err != nil {
 			errs = append(errs, err)
@@ -497,8 +541,10 @@ func joinErrors(errs []error) error {
 		return nil
 	}
 
-	var b []byte
-	for i, err := range errs {
+	var builder strings.Builder
+	first := true
+
+	for _, err := range errs {
 		if err == nil {
 			continue
 		}
@@ -506,17 +552,18 @@ func joinErrors(errs []error) error {
 		if msg == "" {
 			continue
 		}
-		if i > 0 {
-			b = append(b, ';', ' ')
+		if !first {
+			builder.WriteString("; ")
 		}
-		b = append(b, msg...)
+		builder.WriteString(msg)
+		first = false
 	}
 
-	if len(b) == 0 {
+	if builder.Len() == 0 {
 		return nil
 	}
 
-	return errors.New(string(b))
+	return errors.New(builder.String())
 }
 
 func recoverPanic(l Logger) {
