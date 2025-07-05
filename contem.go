@@ -100,7 +100,7 @@ func Start(run func(Context) error, log Logger, opts ...Option) {
 	defer ctx.Shutdown()
 	defer recoverPanic(log)
 
-	if err = run(ctx); err != nil {
+	if err = run(ctx); err != nil && log != nil {
 		log.Error("cannot run application", "error", err)
 		return
 	}
@@ -169,9 +169,9 @@ func NewWithOptions(opts Options) *Contem {
 
 	if opts.AutoShutdown {
 		go func() {
-			select {
-			case <-ctx.Done():
-				_ = ct.Shutdown()
+			<-ctx.Done()
+			if err := ct.Shutdown(); err != nil && ct.log != nil {
+				ct.log.Error("cannot shutdown", "error", err)
 			}
 		}()
 	}
@@ -276,7 +276,7 @@ func (ct *Contem) Shutdown() error {
 	ct.isClosed.Store(true)
 	ct.cancel()
 
-	if ct.logging {
+	if ct.logging && ct.log != nil {
 		ct.log.Info("starting shutdown")
 	}
 
@@ -294,7 +294,7 @@ func (ct *Contem) Shutdown() error {
 
 	serr := joinErrors(errs)
 	if serr != nil {
-		if ct.logging {
+		if ct.logging && ct.log != nil {
 			ct.log.Error("cannot shutdown", "error", serr)
 		}
 		ct.outerErr = &serr // we will os.Exit(1) in any way
@@ -303,7 +303,7 @@ func (ct *Contem) Shutdown() error {
 	// if you add here recoverPanic function it will not work
 	if panicErr := recover(); panicErr != nil {
 		stack := debug.Stack()
-		if ct.log != nil {
+		if ct.logging && ct.log != nil {
 			ct.log.Error(string(stack), "panic", panicErr)
 		} else {
 			fmt.Fprintln(os.Stderr, "panic:", panicErr, "\n\n", string(stack))
