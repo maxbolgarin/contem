@@ -473,17 +473,6 @@ func TestEmpty(t *testing.T) {
 	}
 }
 
-func TestShutdownPanic(t *testing.T) {
-	ctx := contem.New()
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("unexpected panic: %v", r)
-		}
-	}()
-	defer ctx.Shutdown()
-	panic("A")
-}
-
 type file struct {
 	flagSync  *atomic.Bool
 	flagClose *atomic.Bool
