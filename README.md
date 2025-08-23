@@ -33,6 +33,7 @@ func run(ctx contem.Context) error {
     srv := &http.Server{Addr: ":8080"}
     ctx.Add(srv.Shutdown) // That's it! Server will shutdown gracefully on Ctrl+C
     
+    // Make run() function non-blocking
     go func() {
         if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
             slog.Error("Server failed", "error", err)
@@ -55,31 +56,58 @@ Traditional Go applications require boilerplate for graceful shutdown:
 ```go
 // ❌ Traditional approach - lots of boilerplate
 func main() {
-    srv := &http.Server{Addr: ":8080"}
-    
-    // Signal handling boilerplate
-    quit := make(chan os.Signal, 1)
-    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-    
-    go func() {
-        if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-            log.Fatalf("Server failed: %v", err) // ❌ log.Fatal ignores cleanup!
+    file, err := os.OpenFile("important.log", ...) // Open file
+    if err != nil {
+        log.Fatalf("Cannot open file: %v", err)
+    }
+
+    defer func() {
+        if err := file.Close(); err != nil {
+            log.Fatalf("Cannot close file: %v", err)
         }
     }()
-    
-    <-quit
-    log.Println("Shutting down server...")
-    
-    // Manual cleanup with timeout handling
-    ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-    defer cancel()
-    
-    if err := srv.Shutdown(ctx); err != nil {
-        log.Fatalf("Server forced to shutdown: %v", err)
+
+    db, err := sql.Open("postgres", "...")
+    if err != nil {
+        // log.Fatal() ignores defer statements, GC closes file after returning from main()), but it is not a good practice!
+        log.Fatalf("Cannot open database: %v", err)
+    }
+    defer func() {
+        // Close should be idempotent
+        if err := db.Close(); err != nil {
+            log.Fatalf("Cannot close database: %v", err)
+        }
+    }()
+
+    app, err := some.Init(db, file)
+    if err != nil {
+        // log.Fatal() ignores defer statements, so we need to close database manually
+        if err := db.Close(); err != nil {
+            log.Fatalf("Cannot close database: %v", err)
+        }
+        log.Fatalf("Cannot initialize application: %v", err)
     }
     
-    // What about database connections? File handles? Other resources?
-    // More cleanup code needed...
+    // Signal handling boilerplate
+    ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+    defer cancel()
+
+    go some.Run(ctx) // Run some other goroutine
+    
+    <-ctx.Done()
+    log.Println("Shutting down application...")
+    
+    // Manual cleanup with timeout handling
+    ctx2, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+    defer cancel()
+    
+    if err := srv.Shutdown(ctx2); err != nil {
+        // log.Fatal() ignores defer statements, so we need to close database manually
+        if err := db.Close(); err != nil {
+            log.Fatalf("Cannot close database: %v", err)
+        }
+        log.Fatalf("Server forced to shutdown: %v", err)
+    }
 }
 ```
 
@@ -109,6 +137,8 @@ func run(ctx contem.Context) error {
         return err
     }
     ctx.Add(app.Shutdown) // Shutdown will be called on Ctrl+C
+
+    go some.Run(ctx) // Run some other goroutine
     
     return nil
 }
@@ -151,66 +181,71 @@ ctx := contem.New(
 )
 ```
 
-## 📚 Complete Example: Web Server with Database
+## 📚 Complete Example: Web Server with Database without Start() function
 
 ```go
 package main
 
 import (
-    "database/sql"
-    "log/slog"
-    "net/http"
-    "time"
-    
-    "github.com/maxbolgarin/contem"
-    _ "github.com/lib/pq"
+	"database/sql"
+	"log/slog"
+	"net/http"
+	"os"
+
+	"github.com/maxbolgarin/contem"
 )
 
 func main() {
-    contem.Start(run, slog.Default())
-}
+	var err error
 
-func run(ctx contem.Context) error {
-    logFile, err := os.OpenFile("app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-    if err != nil {
-        return err
-    }
+	// Create a new context with Exit option to exit with code 1 in case of error (no need for log.Fatal())
+	ctx := contem.New(contem.Exit(&err), contem.WithLogger(slog.Default()))
+	defer ctx.Shutdown()
 
-    // Automatically syncs and closes file in the last order to log every error during shutdown
-    ctx.AddFile(logFile)
+	logFile, err := os.OpenFile("app.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		slog.Error("cannot open log file", "error", err)
+		return
+	}
 
-    // Set default logger to use the file
-    slog.SetDefault(slog.New(slog.NewTextHandler(logFile, nil))) 
-    
-    db, err := sql.Open("postgres", "postgres://localhost/mydb?sslmode=disable")
-    if err != nil {
-        return err // Will log error and close logFile because it has been added to the context
-    }
-    // Will close database connection gracefully on shutdown
-    ctx.AddClose(db.Close) 
-    
-    mux := http.NewServeMux()
-    mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-        w.Write([]byte("Hello, World!"))
-    })
-    
-    srv := &http.Server{
-        Addr:    ":8080",
-        Handler: mux,
-    }
-   
-    go func() {
-      slog.Info("Server starting", "addr", srv.Addr)
-      if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-          slog.Error("Server failed", "error", err)
-          ctx.Cancel() // Trigger graceful shutdown and release all added resources
-      }
-    }()
+	// Automatically syncs and closes file in the last order to log every error during shutdown
+	ctx.AddFile(logFile)
 
-    // Will shutdown HTTP server gracefully on Ctrl+C
-    ctx.Add(srv.Shutdown) 
+	// Set default logger to use the file
+	fileLogger := slog.New(slog.NewTextHandler(logFile, nil))
+	fileLogger.Info("Starting application")
 
-    return nil
+	db, err := sql.Open("sqlite3", "app.db")
+	if err != nil {
+		slog.Error("cannot open database", "error", err)
+		return
+	}
+	// Will close database connection gracefully on shutdown
+	ctx.AddClose(db.Close)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("Hello, World!"))
+	})
+
+	srv := &http.Server{
+		Addr:    ":8080",
+		Handler: mux,
+	}
+
+	go func() {
+		slog.Info("Server starting", "addr", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("Server failed", "error", err)
+			ctx.Cancel() // Trigger graceful shutdown and release all added resources
+		}
+	}()
+
+	// Will shutdown HTTP server gracefully on Ctrl+C
+	ctx.Add(srv.Shutdown)
+
+	ctx.Wait() // Wait for Ctrl+C
+	// it will start defered shutdown function, which will make graceful shutdown of the whole application
 }
 ```
 
@@ -248,35 +283,6 @@ func run(ctx contem.Context) error {
 | `WithSignals(signals...)` | Custom signals (default: SIGINT, SIGTERM) |
 | `WithDontCloseFiles()` | Skip file closing |
 | `WithRegularCloseFilesOrder()` | Close files with other resources |
-
-## 🔍 Troubleshooting
-
-### Common Issues
-
-**Q: My shutdown functions are timing out**
-```go
-// Increase timeout
-ctx := contem.New(contem.WithShutdownTimeout(60*time.Second))
-```
-
-**Q: I need custom signals**
-```go
-// Listen for custom signals
-ctx := contem.New(contem.WithSignals(syscall.SIGUSR1, syscall.SIGUSR2))
-```
-
-**Q: Shutdown is too slow**
-```go
-// Files close after other resources by default
-// To close everything together:
-ctx := contem.New(contem.RegularCloseFilesOrder())
-```
-
-**Q: I want to see what's happening during shutdown**
-```go
-// Add logging
-ctx := contem.New(contem.WithLogger(slog.Default()))
-```
 
 ## 🔄 Migration Guide
 
