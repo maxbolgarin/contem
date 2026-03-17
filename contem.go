@@ -112,6 +112,9 @@ func Start(run func(Context) error, log Logger, opts ...Option) {
 	opt.Log = log
 	opt.OuterErr = &err
 	opt.Exit = true
+	if opt.ExitErrorCode == 0 {
+		opt.ExitErrorCode = 1
+	}
 
 	ctx := NewWithOptions(opt)
 	defer ctx.Shutdown()
@@ -296,7 +299,10 @@ func (ct *Contem) SetValue(key, value any) Context {
 // Wait blocks until the channel is closed (receiving [syscall.SIGINT] and [syscall.SIGTERM] signals by default).
 // It should be used in the main() function after application start to wait for an interruption.
 func (ct *Contem) Wait() {
-	if ch := ct.ctx.Done(); ch != nil {
+	ct.mu.Lock()
+	ch := ct.ctx.Done()
+	ct.mu.Unlock()
+	if ch != nil {
 		<-ch
 	}
 	// If ctx.Done() returns nil, the context is never cancelled (like context.Background()),
@@ -349,10 +355,13 @@ func (ct *Contem) Shutdown() error {
 		if ct.logging && ct.log != nil {
 			ct.log.Error("cannot shutdown", "error", serr)
 		}
-		ct.outerErr = &serr // we will os.Exit(1) in any way
+		if ct.outerErr != nil {
+			*ct.outerErr = serr
+		}
 	}
 
-	// if you add here recoverPanic function it will not work
+	// recover() works here when Shutdown is called as a deferred function during panic unwinding.
+	// Per Go spec, recover() is effective when called directly by a deferred function.
 	if panicErr := recover(); panicErr != nil {
 		stack := debug.Stack()
 		if ct.logging && ct.log != nil {
@@ -376,36 +385,50 @@ func (ct *Contem) Shutdown() error {
 // Deadline returns the time when work done on behalf of this context should be canceled.
 // Deadline returns ok==false when no deadline is set.
 func (ct *Contem) Deadline() (time.Time, bool) {
-	return ct.ctx.Deadline()
+	ct.mu.Lock()
+	ctx := ct.ctx
+	ct.mu.Unlock()
+	return ctx.Deadline()
 }
 
 // Done returns a channel that will be closed (after receiving [syscall.SIGINT] or [syscall.SIGTERM] signal by default).
 func (ct *Contem) Done() <-chan struct{} {
-	return ct.ctx.Done()
+	ct.mu.Lock()
+	ctx := ct.ctx
+	ct.mu.Unlock()
+	return ctx.Done()
 }
 
 // Err returns nil if Done is not yet closed, if Done is closed, Err returns a non-nil error explaining why.
 func (ct *Contem) Err() error {
-	return ct.ctx.Err()
+	ct.mu.Lock()
+	ctx := ct.ctx
+	ct.mu.Unlock()
+	return ctx.Err()
 }
 
 // Value returns the value associated with this context for key, or nil if no value is associated with key.
 func (ct *Contem) Value(key any) any {
-	return ct.ctx.Value(key)
+	ct.mu.Lock()
+	ctx := ct.ctx
+	ct.mu.Unlock()
+	return ctx.Value(key)
 }
 
 func (ct *Contem) shutdown(ws *waiterSet, start time.Time) []error {
 	var errs []error
 	if ct.noParallel {
+		ctx, cancel := context.WithTimeout(context.Background(), ct.shutdownTimeout)
+		defer cancel()
 		for _, f := range ct.funcs {
-			if err := f(ct.ctx); err != nil {
+			if err := f(ctx); err != nil {
 				errs = append(errs, err)
 			}
 		}
 		return errs
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(ct.ctx, ct.shutdownTimeout)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), ct.shutdownTimeout)
 	defer cancel()
 
 	for _, f := range ct.funcs {
