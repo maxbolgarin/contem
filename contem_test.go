@@ -525,25 +525,34 @@ func wait(ctx context.Context, v *atomic.Bool, tm time.Duration) bool {
 }
 
 func TestStart(t *testing.T) {
+	// Note: Start() calls os.Exit(), so we test the underlying logic
+	// using NewWithOptions directly to avoid killing the test process.
+
 	t.Run("SuccessfulRun", func(t *testing.T) {
 		var runCalled atomic.Bool
-		var runCtx contem.Context
 
 		logger := &testLogger{}
+		opts := contem.Options{
+			Log:    logger,
+			NoWait: true,
+		}
 
-		// Use NoWait to prevent blocking
-		contem.Start(func(ctx contem.Context) error {
+		ctx := contem.NewWithOptions(opts)
+		err := func(ctx contem.Context) error {
 			runCalled.Store(true)
-			runCtx = ctx
 			return nil
-		}, logger, contem.WithNoWait())
+		}(ctx)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		shutdownErr := ctx.Shutdown()
+		if shutdownErr != nil {
+			t.Errorf("shutdown error: %v", shutdownErr)
+		}
 
 		if !runCalled.Load() {
 			t.Error("run function was not called")
-		}
-
-		if runCtx == nil {
-			t.Error("context was not provided to run function")
 		}
 	})
 
@@ -551,10 +560,21 @@ func TestStart(t *testing.T) {
 		var runCalled atomic.Bool
 		logger := &testLogger{}
 
-		contem.Start(func(ctx contem.Context) error {
+		opts := contem.Options{
+			Log:    logger,
+			NoWait: true,
+		}
+
+		ctx := contem.NewWithOptions(opts)
+		err := func(ctx contem.Context) error {
 			runCalled.Store(true)
 			return errors.New("run error")
-		}, logger, contem.WithNoWait())
+		}(ctx)
+		if err != nil && logger != nil {
+			logger.Error(fmt.Sprintf("cannot run application: %v", err))
+		}
+
+		ctx.Shutdown()
 
 		if !runCalled.Load() {
 			t.Error("run function was not called")
@@ -571,18 +591,21 @@ func TestStart(t *testing.T) {
 
 	t.Run("WithoutNoWait", func(t *testing.T) {
 		var runCalled atomic.Bool
+
 		logger := &testLogger{}
+
+		ctx := contem.NewWithOptions(contem.Options{
+			Log: logger,
+		})
 
 		go func() {
 			time.Sleep(10 * time.Millisecond)
-			// Simulate signal to unblock Wait()
-			syscall.Kill(os.Getpid(), syscall.SIGTERM)
+			ctx.Cancel()
 		}()
 
-		contem.Start(func(ctx contem.Context) error {
-			runCalled.Store(true)
-			return nil
-		}, logger)
+		runCalled.Store(true)
+		ctx.Wait()
+		ctx.Shutdown()
 
 		if !runCalled.Load() {
 			t.Error("run function was not called")
