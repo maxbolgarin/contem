@@ -23,13 +23,14 @@ jobs:
           node-version: '20'
 
       - name: Install semantic-release
+        # Pinned: semantic-release v25 has breaking changes, stay on the v24 line
         run: |
-          npm install -g semantic-release
-          npm install -g @semantic-release/changelog
-          npm install -g @semantic-release/git
-          npm install -g @semantic-release/github
+          npm install -g semantic-release@24.2.9
+          npm install -g @semantic-release/changelog@6.0.3
+          npm install -g @semantic-release/git@10.0.1
+          npm install -g @semantic-release/github@11.0.6
 
       - name: Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx semantic-release
+        run: npx semantic-release@24.2.9
