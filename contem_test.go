@@ -167,7 +167,10 @@ func TestShutdownError(t *testing.T) {
 
 func TestShutdownTimeout(t *testing.T) {
 	ctx := contem.New()
+
+	originalTimeout := contem.GetDefaultShutdownTimeout()
 	contem.SetDefaultShutdownTimeout(time.Millisecond)
+	defer contem.SetDefaultShutdownTimeout(originalTimeout)
 
 	var (
 		firstFuncFlag  atomic.Bool
@@ -1119,13 +1122,22 @@ type testLogger struct {
 func (l *testLogger) Info(msg string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.infos = append(l.infos, fmt.Sprintf(msg, args...))
+	l.infos = append(l.infos, formatLog(msg, args...))
 }
 
 func (l *testLogger) Error(msg string, args ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.errors = append(l.errors, fmt.Sprintf(msg, args...))
+	l.errors = append(l.errors, formatLog(msg, args...))
+}
+
+// formatLog appends slog-style key-value args to the message
+// (msg is not a printf format string).
+func formatLog(msg string, args ...any) string {
+	if len(args) == 0 {
+		return msg
+	}
+	return msg + " " + fmt.Sprintln(args...)
 }
 
 type testFile struct {
