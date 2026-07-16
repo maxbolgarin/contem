@@ -43,7 +43,7 @@ func main() {
 	// 4. Remove log file
 	// 5. os.Exit(0)
 
-	// Goroutine with ticker will also be stopped after recieving the interrupt signal.
+	// Goroutine with ticker will also be stopped after receiving the interrupt signal.
 }
 
 func run(ctx contem.Context) error {
@@ -52,7 +52,7 @@ func run(ctx contem.Context) error {
 
 	// Dummy example, image you have real code here
 	for i := range make([]int, 10) {
-		ctx.AddClose(new(ctx, i).Close)
+		ctx.AddClose(newCloser(ctx, i).Close)
 	}
 
 	logFile, err := os.OpenFile("out.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
@@ -60,7 +60,7 @@ func run(ctx contem.Context) error {
 		return err
 	}
 
-	// contem.RegularCloseFilesOrder() means that this file will closed with other sutdown methods
+	// contem.RegularCloseFilesOrder() means that this file will closed with other shutdown methods
 	// contem.NoParallel means that this file will be closed BEFORE it deletes
 	ctx.AddFile(logFile)
 	ctx.AddClose(func() error { return os.Remove("out.log") })
@@ -97,7 +97,7 @@ type testCloser struct {
 	i int
 }
 
-func new(_ context.Context, i int) testCloser {
+func newCloser(_ context.Context, i int) testCloser {
 	return testCloser{i}
 }
 

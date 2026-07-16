@@ -28,7 +28,10 @@ type Options struct {
 	// ShutdownTimeout is a timeout for context in every added Shutdown function.
 	// Default is 15 seconds.
 	ShutdownTimeout time.Duration
-	// OuterErr is an error for [Options.Exit] option to exit with code 1 if it is not nil even after successful shutdown.
+	// OuterErr is an error for [Options.Exit] option to exit with [Options.ExitErrorCode]
+	// if it is not nil even after successful shutdown.
+	// The pointed-to error is read during [Context.Shutdown] without synchronization,
+	// so it should be written before shutdown starts (e.g. before calling [Context.Cancel]).
 	OuterErr *error
 	// ExitErrorCode is an error code to exit with if [Options.Exit] option is true and an error occurred.
 	ExitErrorCode int
@@ -44,7 +47,8 @@ type Options struct {
 	// DontCloseFiles ignores file closing at the end of [Context.Shutdown],
 	// so you rely on GC, which will close files after returning from main.
 	DontCloseFiles bool
-	// NoWait will not call [Context.Wait] at the end of the [Start] function.
+	// NoWait will not call [Context.Wait] at the end of the [Start] function:
+	// resources are cleaned up right after the run() function call and [Start] returns without calling [os.Exit].
 	NoWait bool
 }
 
@@ -64,6 +68,8 @@ func WithAutoShutdown() Option {
 
 // Exit calls [os.Exit] at the end of [Context.Shutdown] method with code 1 if there are errors, zero code otherwise.
 // It accepts an outer error to exit with code 1 if it is not nil even after successful shutdown.
+// The pointed-to error is read during [Context.Shutdown] without synchronization,
+// so it should be written before shutdown starts (e.g. before calling [Context.Cancel]).
 // It also logs a "cannot shutdown" message if shutdown failed and waits for 100ms to flush before exiting the program.
 // You can provide errorCode to call [os.Exit] with it in case of error.
 func Exit(err *error, errorCode ...int) Option {
@@ -143,7 +149,8 @@ func WithSignals(sig ...os.Signal) Option {
 	}
 }
 
-// WithNoWait will not call [Context.Wait] in the end of the [Start] function.
+// WithNoWait will not call [Context.Wait] in the end of the [Start] function:
+// resources are cleaned up right after the run() function call and [Start] returns without calling [os.Exit].
 func WithNoWait() Option {
 	return func(s *Options) {
 		s.NoWait = true

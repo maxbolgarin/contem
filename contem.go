@@ -101,27 +101,33 @@ type File interface {
 // It should initialize the application, start workers in separate goroutines and return an error in case of initialization failure.
 // Start will wait for interrupt signals and then call [Context.Shutdown]. It uses the logger to log run() errors.
 // The run function accepts [Context] as an argument, so you can add shutdown and cancel methods to it.
-// If an error occurs during run, it will log it and exit with code 1.
-// [AutoShutdown], [Exit], [WithLogger] options are no-op because they are applied by default.
-// Option [WithNoWait] will not call [Context.Wait] at the end of the [Start] function,
-// so [Start] will return immediately after the run() function call.
+// If an error occurs during run (or run panics), it will log it and exit with code 1.
+// [Exit] and [WithLogger] options are no-op because they are applied by default.
+// Option [WithNoWait] will not call [Context.Wait] at the end of the [Start] function:
+// resources are cleaned up right after the run() function call and Start returns without calling [os.Exit].
 func Start(run func(Context) error, log Logger, opts ...Option) {
 	var err error
 
 	opt := parseOptions(opts...)
 	opt.Log = log
 	opt.OuterErr = &err
-	opt.Exit = true
-	if opt.ExitErrorCode == 0 {
-		opt.ExitErrorCode = 1
-	}
+	// With NoWait Start must return to the caller as documented, so it cannot call os.Exit.
+	// ExitErrorCode defaults to 1 in NewWithOptions when Exit is set.
+	opt.Exit = !opt.NoWait
 
 	ctx := NewWithOptions(opt)
 	defer ctx.Shutdown()
-	defer recoverPanic(log)
+	defer func() {
+		if panicErr := recover(); panicErr != nil {
+			logPanic(log, panicErr)
+			err = fmt.Errorf("panic: %v", panicErr)
+		}
+	}()
 
-	if err = run(ctx); err != nil && log != nil {
-		log.Error("cannot run application", "error", err)
+	if err = run(ctx); err != nil {
+		if log != nil {
+			log.Error("cannot run application", "error", err)
+		}
 		return
 	}
 
@@ -139,6 +145,8 @@ type Contem struct {
 
 	ctx    context.Context
 	cancel func()
+	// ctxMu guards ctx, which is replaced by SetValue and read by the context.Context methods.
+	ctxMu sync.RWMutex
 
 	shutdownTimeout time.Duration
 
@@ -147,12 +155,14 @@ type Contem struct {
 	exitErrorCode int
 	noParallel    bool
 	exit          bool
-	logging       bool
 	noFiles       bool
 	regularOrder  bool
 
 	isClosed atomic.Bool
-	mu       sync.Mutex
+	// shutdownDone is closed when the winning Shutdown call finishes,
+	// so concurrent Shutdown calls can block until cleanup is complete.
+	shutdownDone chan struct{}
+	mu           sync.Mutex
 }
 
 // New returns a ready to use [Context] with a created [signal.NotifyContext]
@@ -174,6 +184,10 @@ func NewWithOptions(opts Options) *Contem {
 		opts.Signals = []os.Signal{syscall.SIGINT, syscall.SIGTERM}
 	}
 
+	if opts.Exit && opts.ExitErrorCode == 0 {
+		opts.ExitErrorCode = 1
+	}
+
 	ctx, cancel := signal.NotifyContext(opts.BaseCtx, opts.Signals...)
 
 	ct := &Contem{
@@ -184,10 +198,10 @@ func NewWithOptions(opts Options) *Contem {
 		exitErrorCode:   opts.ExitErrorCode,
 		noParallel:      opts.NoParallel,
 		exit:            opts.Exit,
-		logging:         opts.Log != nil,
 		noFiles:         opts.DontCloseFiles,
 		regularOrder:    opts.RegularFileOrder,
 		shutdownTimeout: opts.ShutdownTimeout,
+		shutdownDone:    make(chan struct{}),
 	}
 
 	if opts.AutoShutdown {
@@ -206,7 +220,7 @@ func NewWithOptions(opts Options) *Contem {
 
 // NewEmpty returns a dummy [Context] with [context.Background] context. It is useful for tests.
 func NewEmpty() *Contem {
-	return &Contem{ctx: context.Background(), cancel: func() {}}
+	return &Contem{ctx: context.Background(), cancel: func() {}, shutdownDone: make(chan struct{})}
 }
 
 // Empty returns a dummy [Context] with [context.Background] context. It is useful for tests.
@@ -215,6 +229,7 @@ func Empty() *Contem {
 }
 
 // Add adds a shutdown function to the list of functions that will be called in the [Context.Shutdown] method.
+// Functions added after [Context.Shutdown] has started are ignored.
 func (ct *Contem) Add(f ShutdownFunc) {
 	if f == nil {
 		return // Silently ignore nil functions to prevent panics
@@ -222,6 +237,10 @@ func (ct *Contem) Add(f ShutdownFunc) {
 
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
+
+	if ct.isClosed.Load() {
+		return // Shutdown already started, this function would never be called
+	}
 
 	ct.funcs = append(ct.funcs, f)
 }
@@ -236,6 +255,10 @@ func (ct *Contem) AddClose(f CloseFunc) {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
 
+	if ct.isClosed.Load() {
+		return // Shutdown already started, this function would never be called
+	}
+
 	ct.funcs = append(ct.funcs, func(context.Context) error {
 		return f()
 	})
@@ -249,6 +272,10 @@ func (ct *Contem) AddFunc(f func()) {
 
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
+
+	if ct.isClosed.Load() {
+		return // Shutdown already started, this function would never be called
+	}
 
 	ct.funcs = append(ct.funcs, func(context.Context) error {
 		f()
@@ -265,6 +292,10 @@ func (ct *Contem) AddFile(f File) {
 
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
+
+	if ct.isClosed.Load() {
+		return // Shutdown already started, this file would never be closed
+	}
 
 	closer := func() error {
 		var errs []error
@@ -289,8 +320,12 @@ func (ct *Contem) AddFile(f File) {
 // SetValue sets a value to the underlying context. You can get this value using the [Context.Value] method.
 // It updates the original context.
 func (ct *Contem) SetValue(key, value any) Context {
-	ct.mu.Lock()
-	defer ct.mu.Unlock()
+	if key == nil {
+		return ct // Silently ignore nil keys, context.WithValue panics on them
+	}
+
+	ct.ctxMu.Lock()
+	defer ct.ctxMu.Unlock()
 
 	ct.ctx = context.WithValue(ct.ctx, key, value)
 	return ct
@@ -299,10 +334,7 @@ func (ct *Contem) SetValue(key, value any) Context {
 // Wait blocks until the channel is closed (receiving [syscall.SIGINT] and [syscall.SIGTERM] signals by default).
 // It should be used in the main() function after application start to wait for an interruption.
 func (ct *Contem) Wait() {
-	ct.mu.Lock()
-	ch := ct.ctx.Done()
-	ct.mu.Unlock()
-	if ch != nil {
+	if ch := ct.context().Done(); ch != nil {
 		<-ch
 	}
 	// If ctx.Done() returns nil, the context is never cancelled (like context.Background()),
@@ -318,19 +350,43 @@ func (ct *Contem) Cancel() {
 
 // Shutdown cancels an underlying context, then calls every added function with [ShutdownTimeout] in parallel.
 // It will return an error if the timeout is exceeded or if any of the shutdown functions returns an error.
+// Functions added after Shutdown has started are not called.
+// If Shutdown is called concurrently, only the first call performs the cleanup;
+// the other calls block until it is finished and return nil.
 func (ct *Contem) Shutdown() error {
 	defer recoverPanic(ct.log)
 
 	ct.mu.Lock()
-	defer ct.mu.Unlock()
-
 	if ct.isClosed.Load() {
+		done := ct.shutdownDone
+		ct.mu.Unlock()
+		if done != nil {
+			<-done // block until the winning Shutdown call finishes
+		}
 		return nil
 	}
 	ct.isClosed.Store(true)
+
+	funcs := ct.funcs
+	fileClosers := ct.fileClosers
+	ct.funcs, ct.fileClosers = nil, nil
+
+	timeout := ct.shutdownTimeout
+	if timeout == 0 {
+		timeout = GetDefaultShutdownTimeout()
+	}
+	done := ct.shutdownDone
+	// Release the lock before running shutdown functions, so they can safely
+	// call Add* and SetValue without deadlocking (especially in NoParallel mode).
+	ct.mu.Unlock()
+
+	if done != nil {
+		defer close(done)
+	}
+
 	ct.cancel()
 
-	if ct.logging && ct.log != nil {
+	if ct.log != nil {
 		ct.log.Info("starting shutdown")
 	}
 
@@ -339,41 +395,30 @@ func (ct *Contem) Shutdown() error {
 		ws    = newWaiterSet(ct.log)
 	)
 
-	if ct.shutdownTimeout == 0 {
-		ct.shutdownTimeout = GetDefaultShutdownTimeout()
-	}
+	// The underlying context is already canceled at this point, so the shutdown context
+	// must not inherit its cancellation (only its values) — otherwise every shutdown
+	// function would receive a dead context and e.g. http.Server.Shutdown would not drain.
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ct.context()), timeout)
+	defer cancel()
 
-	errs := ct.shutdown(ws, start)
-
-	errsFiles := ct.closeFiles(ws, start)
-	if len(errsFiles) > 0 {
-		errs = append(errs, errsFiles...)
-	}
+	errs := ct.shutdown(shutdownCtx, ws, funcs, start, timeout)
+	errs = append(errs, ct.closeFiles(shutdownCtx, ws, fileClosers, start, timeout)...)
 
 	serr := joinErrors(errs)
-	if serr != nil {
-		if ct.logging && ct.log != nil {
-			ct.log.Error("cannot shutdown", "error", serr)
-		}
-		if ct.outerErr != nil {
-			*ct.outerErr = serr
-		}
+	if serr != nil && ct.log != nil {
+		ct.log.Error("cannot shutdown", "error", serr)
 	}
 
-	// recover() works here when Shutdown is called as a deferred function during panic unwinding.
-	// Per Go spec, recover() is effective when called directly by a deferred function.
+	// When Shutdown runs as a deferred call of a panicking function (`defer ctx.Shutdown()`
+	// and a panic in main), only a recover() called directly in Shutdown's body can catch
+	// that panic — a nested call like recoverPanic() would not work here.
 	if panicErr := recover(); panicErr != nil {
-		stack := debug.Stack()
-		if ct.logging && ct.log != nil {
-			ct.log.Error(string(stack), "panic", panicErr)
-		} else {
-			fmt.Fprintln(os.Stderr, "panic:", panicErr, "\n\n", string(stack))
-		}
+		logPanic(ct.log, panicErr)
 	}
 
 	if ct.exit {
 		time.Sleep(100 * time.Millisecond) // wait for flush
-		if ct.outerErr != nil && *ct.outerErr != nil {
+		if serr != nil || (ct.outerErr != nil && *ct.outerErr != nil) {
 			os.Exit(ct.exitErrorCode)
 		}
 		os.Exit(0)
@@ -385,42 +430,34 @@ func (ct *Contem) Shutdown() error {
 // Deadline returns the time when work done on behalf of this context should be canceled.
 // Deadline returns ok==false when no deadline is set.
 func (ct *Contem) Deadline() (time.Time, bool) {
-	ct.mu.Lock()
-	ctx := ct.ctx
-	ct.mu.Unlock()
-	return ctx.Deadline()
+	return ct.context().Deadline()
 }
 
 // Done returns a channel that will be closed (after receiving [syscall.SIGINT] or [syscall.SIGTERM] signal by default).
 func (ct *Contem) Done() <-chan struct{} {
-	ct.mu.Lock()
-	ctx := ct.ctx
-	ct.mu.Unlock()
-	return ctx.Done()
+	return ct.context().Done()
 }
 
 // Err returns nil if Done is not yet closed, if Done is closed, Err returns a non-nil error explaining why.
 func (ct *Contem) Err() error {
-	ct.mu.Lock()
-	ctx := ct.ctx
-	ct.mu.Unlock()
-	return ctx.Err()
+	return ct.context().Err()
 }
 
 // Value returns the value associated with this context for key, or nil if no value is associated with key.
 func (ct *Contem) Value(key any) any {
-	ct.mu.Lock()
-	ctx := ct.ctx
-	ct.mu.Unlock()
-	return ctx.Value(key)
+	return ct.context().Value(key)
 }
 
-func (ct *Contem) shutdown(ws *waiterSet, start time.Time) []error {
+func (ct *Contem) context() context.Context {
+	ct.ctxMu.RLock()
+	defer ct.ctxMu.RUnlock()
+	return ct.ctx
+}
+
+func (ct *Contem) shutdown(ctx context.Context, ws *waiterSet, funcs []ShutdownFunc, start time.Time, timeout time.Duration) []error {
 	var errs []error
 	if ct.noParallel {
-		ctx, cancel := context.WithTimeout(context.Background(), ct.shutdownTimeout)
-		defer cancel()
-		for _, f := range ct.funcs {
+		for _, f := range funcs {
 			if err := f(ctx); err != nil {
 				errs = append(errs, err)
 			}
@@ -428,14 +465,11 @@ func (ct *Contem) shutdown(ws *waiterSet, start time.Time) []error {
 		return errs
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), ct.shutdownTimeout)
-	defer cancel()
-
-	for _, f := range ct.funcs {
-		ws.add(shutdownCtx, f)
+	for _, f := range funcs {
+		ws.add(ctx, f)
 	}
 
-	err := ws.await(start, ct.shutdownTimeout)
+	err := ws.await(start, timeout)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("shutdown: %w", err))
 	}
@@ -443,18 +477,18 @@ func (ct *Contem) shutdown(ws *waiterSet, start time.Time) []error {
 	return errs
 }
 
-func (ct *Contem) closeFiles(ws *waiterSet, start time.Time) []error {
+func (ct *Contem) closeFiles(ctx context.Context, ws *waiterSet, fileClosers []CloseFunc, start time.Time, timeout time.Duration) []error {
 	if ct.noFiles {
 		return nil
 	}
 
-	if len(ct.fileClosers) == 0 {
+	if len(fileClosers) == 0 {
 		return nil
 	}
 
 	var errs []error
 	if ct.noParallel {
-		for _, f := range ct.fileClosers {
+		for _, f := range fileClosers {
 			if err := f(); err != nil {
 				errs = append(errs, err)
 			}
@@ -462,16 +496,18 @@ func (ct *Contem) closeFiles(ws *waiterSet, start time.Time) []error {
 		return errs
 	}
 
-	for _, f := range ct.fileClosers {
+	for _, f := range fileClosers {
 		f := f // capture loop variable
-		ws.add(context.Background(), func(context.Context) error {
+		ws.add(ctx, func(context.Context) error {
 			return f()
 		})
 	}
 
-	timeout := max(ct.shutdownTimeout-time.Since(start), ct.shutdownTimeout/5)
+	// Files get the remaining shutdown budget, but at least timeout/5,
+	// counted from now — the first phase already consumed time since start.
+	fileTimeout := max(timeout-time.Since(start), timeout/5)
 
-	err := ws.await(start, timeout)
+	err := ws.await(time.Now(), fileTimeout)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("close files: %w", err))
 	}
@@ -520,11 +556,7 @@ func newWaiter(ctx context.Context, foo ShutdownFunc, l Logger) *waiter {
 		defer close(w.done)
 		defer func() {
 			if panicErr := recover(); panicErr != nil {
-				if w.err != nil {
-					w.err = fmt.Errorf("%w: %s", w.err, panicErr)
-				} else {
-					w.err = fmt.Errorf("%s", panicErr)
-				}
+				w.err = fmt.Errorf("%s", panicErr)
 				if l != nil {
 					stack := debug.Stack()
 					l.Error(string(stack), "error", w.err)
@@ -553,43 +585,57 @@ func (f *waiter) await(timeout time.Duration) error {
 	}
 }
 
-func joinErrors(errs []error) error {
-	if len(errs) == 0 {
-		return nil
-	}
+// joinedError joins multiple errors into one, keeping errors.Is/As working
+// through Unwrap and formatting the message as "err1; err2; ...".
+type joinedError struct {
+	errs []error
+}
 
+func (e *joinedError) Error() string {
 	var builder strings.Builder
-	first := true
-
-	for _, err := range errs {
-		if err == nil {
-			continue
-		}
-		msg := err.Error()
-		if msg == "" {
-			continue
-		}
-		if !first {
+	for i, err := range e.errs {
+		if i > 0 {
 			builder.WriteString("; ")
 		}
-		builder.WriteString(msg)
-		first = false
+		builder.WriteString(err.Error())
+	}
+	return builder.String()
+}
+
+func (e *joinedError) Unwrap() []error {
+	return e.errs
+}
+
+func joinErrors(errs []error) error {
+	var nonNil []error
+	for _, err := range errs {
+		if err == nil || err.Error() == "" {
+			continue
+		}
+		nonNil = append(nonNil, err)
 	}
 
-	if builder.Len() == 0 {
+	switch len(nonNil) {
+	case 0:
 		return nil
+	case 1:
+		return nonNil[0]
+	default:
+		return &joinedError{errs: nonNil}
 	}
-
-	return errors.New(builder.String())
 }
 
 func recoverPanic(l Logger) {
 	if panicErr := recover(); panicErr != nil {
-		stack := debug.Stack()
-		if l != nil {
-			l.Error(string(stack), "panic", panicErr)
-		} else {
-			fmt.Fprintln(os.Stderr, "panic:", panicErr, "\n\n", string(stack))
-		}
+		logPanic(l, panicErr)
+	}
+}
+
+func logPanic(l Logger, panicErr any) {
+	stack := debug.Stack()
+	if l != nil {
+		l.Error(string(stack), "panic", panicErr)
+	} else {
+		fmt.Fprintln(os.Stderr, "panic:", panicErr, "\n\n", string(stack))
 	}
 }
